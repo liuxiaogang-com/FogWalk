@@ -10,13 +10,7 @@ struct ContentView: View {
     @State private var isReviewPresented = false
 
     var body: some View {
-        ZStack {
-            if model.isLoading {
-                loadingView
-            } else {
-                mapExperience
-            }
-        }
+        mapExperience
         .preferredColorScheme(.dark)
         .task { model.loadStoredDataIfNeeded() }
         .fullScreenCover(isPresented: $model.isExploreSheetPresented) {
@@ -81,6 +75,14 @@ struct ContentView: View {
 
             VStack(spacing: 10) {
                 topBar
+                if model.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.mini)
+                        Text(model.loadingMessage).font(.caption2)
+                    }
+                    .padding(10).background(.regularMaterial, in: Capsule())
+                    .allowsHitTesting(false)
+                }
                 Spacer()
                 HStack {
                     if model.liveMapCoordinate == nil {
@@ -101,6 +103,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.plain)
+                .disabled(model.isWorking)
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -134,12 +137,13 @@ struct ContentView: View {
                 } label: {
                     Label("导入数据", systemImage: "square.and.arrow.down")
                 }
+                .disabled(model.isWorking)
                 Button {
                     prepareExport()
                 } label: {
                     Label("导出备份", systemImage: "square.and.arrow.up")
                 }
-                .disabled(!model.hasData)
+                .disabled(!model.hasData || model.isWorking)
                 Button {
                     isLayersPresented = true
                 } label: { Label("地图图层", systemImage: "square.3.layers.3d") }
@@ -224,7 +228,7 @@ struct ContentView: View {
                     model.mainMapOverviewRequestID &+= 1
                     isReviewPresented = false
                 }
-                .buttonStyle(.borderedProminent).tint(.orange).disabled(!model.hasData)
+                .buttonStyle(.borderedProminent).tint(.orange).disabled(!model.hasData || model.isLoading)
                 Spacer()
             }
             .padding(20).navigationTitle("足迹回顾").navigationBarTitleDisplayMode(.inline)

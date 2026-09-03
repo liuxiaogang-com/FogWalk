@@ -71,7 +71,7 @@ struct TrackDataset: Sendable, Codable {
     let summary: ImportSummary
 }
 
-enum TrackTimeFilter: String, CaseIterable, Identifiable, Sendable {
+enum TrackTimeFilter: String, CaseIterable, Identifiable, Sendable, Codable {
     case today = "今日"
     case sevenDays = "七日"
     case month = "本月"

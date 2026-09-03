@@ -8,6 +8,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var isPreparingExport = false
     @Published private(set) var loadingMessage = "正在读取本地足迹…"
     @Published private(set) var dataset: TrackDataset?
+    @Published private(set) var librarySummary: ImportSummary?
+    @Published private(set) var libraryReadFailed = false
     @Published private(set) var presentation: TrackPresentation = .empty
     @Published private(set) var explorationPresentation: TrackPresentation = .empty
     @Published private(set) var explorationGrid: ExplorationGrid?
@@ -46,6 +48,7 @@ final class AppModel: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var searchGeneration = SearchGeneration()
     private var seenDestinationKeys = Set<String>()
+    private var cachedPresentations: [TrackTimeFilter: TrackPresentation] = [:]
 
     init(store: TrackDataStore = TrackDataStore(), preferences: UserDefaults = .standard) {
         self.store = store
@@ -60,7 +63,7 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var hasData: Bool { dataset?.points.isEmpty == false }
+    var hasData: Bool { (librarySummary?.uniqueCount ?? dataset?.summary.uniqueCount ?? 0) > 0 }
     var isWorking: Bool { isLoading || isImporting || isPreparingExport }
 
     var activeCoordinate: GeoCoordinate? {
@@ -102,12 +105,20 @@ final class AppModel: ObservableObject {
         loadingMessage = "正在读取本地足迹…"
 
         Task {
+            let started = ProcessInfo.processInfo.systemUptime
             do {
-                if let loaded = try await store.load() {
-                    loadingMessage = "正在恢复地图与迷雾…"
-                    await install(loaded)
+                if let cached = await store.loadStartup() {
+                    applyStartup(cached)
+                    NSLog("FOGWALK_STARTUP path=cache points=%ld seconds=%.3f", cached.summary.uniqueCount,
+                          ProcessInfo.processInfo.systemUptime - started)
+                } else if let loaded = try await store.load() {
+                    loadingMessage = "正在首次优化足迹，下次打开会更快…"
+                    try await install(loaded)
+                    NSLog("FOGWALK_STARTUP path=rebuild points=%ld seconds=%.3f", loaded.summary.uniqueCount,
+                          ProcessInfo.processInfo.systemUptime - started)
                 }
             } catch {
+                libraryReadFailed = true
                 noticeTitle = "本地数据读取失败"
                 noticeMessage = "原有足迹档案无法读取，你仍可重新导入备份。\n\n\(error.localizedDescription)"
             }
@@ -116,20 +127,21 @@ final class AppModel: ObservableObject {
     }
 
     func importFiles(_ urls: [URL]) {
-        guard !urls.isEmpty, !isImporting else { return }
+        guard !urls.isEmpty, !isWorking else { return }
         isImporting = true
         loadingMessage = "正在导入并去重…"
-        let existing = dataset
-
         Task {
             do {
+                // A cache-only launch has no raw points in memory. Always restore
+                // the archive before merging; a read failure must never overwrite it.
+                let existing = try await fullDataset()
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     try TrackDataLoader.importFiles(urls: urls, existing: existing)
                 }.value
                 loadingMessage = "正在写入本地足迹档案…"
                 try await store.save(loaded)
                 loadingMessage = "正在更新地图与迷雾…"
-                await install(loaded)
+                try await install(loaded)
                 noticeTitle = "导入完成"
                 noticeMessage = "已保存 \(loaded.summary.uniqueCount.formatted()) 个唯一位置。以后启动会直接读取本地档案，重复导入的数据不会重复计数。"
             } catch {
@@ -141,12 +153,13 @@ final class AppModel: ObservableObject {
     }
 
     func makeExportData() async -> Data? {
-        guard let dataset, !isPreparingExport else { return nil }
+        guard hasData, !isWorking else { return nil }
         isPreparingExport = true
         loadingMessage = "正在生成足迹备份…"
         defer { isPreparingExport = false }
 
         do {
+            guard let dataset = try await fullDataset() else { return nil }
             return try await Task.detached(priority: .userInitiated) {
                 try TrackArchiveCodec.encode(dataset)
             }.value
@@ -173,6 +186,10 @@ final class AppModel: ObservableObject {
     func selectFilter(_ filter: TrackTimeFilter) {
         guard filter != selectedFilter else { return }
         selectedFilter = filter
+        if let cached = cachedPresentations[filter] {
+            presentation = cached
+            return
+        }
         rebuildTask?.cancel()
         rebuildTask = Task { await rebuildPresentation(filter: filter) }
     }
@@ -206,6 +223,12 @@ final class AppModel: ObservableObject {
         changeBatch: Bool = false
     ) {
         cancelSearch()
+        guard !isLoading, !isImporting, !libraryReadFailed else {
+            exploreErrorMessage = libraryReadFailed
+                ? "足迹档案尚未恢复，暂不推荐目的地，以免误判已探索区域。请先恢复数据。"
+                : "正在恢复已探索区域，请稍后再试。"
+            return
+        }
         guard let start = activeCoordinate else {
             locationManager.requestCurrentLocation()
             exploreErrorMessage = "尚未获得定位。请允许位置访问，定位后点击重试。"
@@ -247,23 +270,43 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func install(_ loaded: TrackDataset) async {
+    private func install(_ loaded: TrackDataset) async throws {
         dataset = loaded
-        explorationRevision += 1
-        let targetExplorationRevision = explorationRevision
-        let artifacts = await Task.detached(priority: .userInitiated) {
-            (
-                ExplorationGrid(points: loaded.points),
-                TrackProcessor.makePresentation(
-                    dataset: loaded,
-                    filter: .lifetime,
-                    revision: targetExplorationRevision
-                )
-            )
+        libraryReadFailed = false
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            StartupSnapshot.build(dataset: loaded)
         }.value
-        explorationGrid = artifacts.0
-        explorationPresentation = artifacts.1
-        await rebuildPresentation(filter: selectedFilter)
+        let restored = try await Task.detached(priority: .userInitiated, operation: {
+            RestoredStartup(summary: snapshot.summary, grid: snapshot.grid,
+                            presentations: try snapshot.restoredPresentations())
+        }).value
+        applyStartup(restored)
+        // Cache persistence is best effort. The original archive is authoritative.
+        try? await store.saveStartup(snapshot)
+    }
+
+    private func applyStartup(_ snapshot: RestoredStartup) {
+        librarySummary = snapshot.summary
+        explorationGrid = snapshot.grid
+        // Revisions must change after an import even when cached filter IDs match.
+        explorationRevision += 10
+        cachedPresentations = snapshot.presentations.mapValues { value in
+            TrackPresentation(revision: explorationRevision + value.revision, filter: value.filter,
+                              segments: value.segments, isolatedPoints: value.isolatedPoints,
+                              visiblePointCount: value.visiblePointCount, totalDistanceMeters: value.totalDistanceMeters,
+                              referenceDate: value.referenceDate, latestCoordinate: value.latestCoordinate)
+        }
+        explorationPresentation = cachedPresentations[.lifetime] ?? .empty
+        presentation = cachedPresentations[selectedFilter] ?? .empty
+        isLoading = false
+    }
+
+    private func fullDataset() async throws -> TrackDataset? {
+        if let dataset { return dataset }
+        let loaded = try await store.load()
+        if hasData && loaded == nil { throw TrackDataStoreError.emptyArchive }
+        dataset = loaded
+        return loaded
     }
 
     private func rebuildPresentation(filter: TrackTimeFilter) async {

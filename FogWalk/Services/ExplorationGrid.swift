@@ -4,7 +4,7 @@ import MapKit
 /// A compact raster of everywhere the user has explored. Track samples are
 /// connected only when TrackProcessor considers the movement trustworthy, then
 /// every point/segment is expanded to the configured visual exploration radius.
-struct ExplorationGrid: Sendable {
+struct ExplorationGrid: Sendable, Codable {
     private struct Cell: Hashable, Sendable {
         let x: Int32
         let y: Int32
@@ -15,6 +15,41 @@ struct ExplorationGrid: Sendable {
     private let cells: Set<Cell>
     private let cellSizeMapPoints: Double
     private let mapPointsPerMeter: Double
+
+    private enum CodingKeys: String, CodingKey { case cells, cellSizeMapPoints, mapPointsPerMeter }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        var bytes = Data(capacity: cells.count * 8)
+        for cell in cells {
+            var x = cell.x.littleEndian
+            var y = cell.y.littleEndian
+            withUnsafeBytes(of: &x) { bytes.append(contentsOf: $0) }
+            withUnsafeBytes(of: &y) { bytes.append(contentsOf: $0) }
+        }
+        try container.encode(bytes, forKey: .cells)
+        try container.encode(cellSizeMapPoints, forKey: .cellSizeMapPoints)
+        try container.encode(mapPointsPerMeter, forKey: .mapPointsPerMeter)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let data = try container.decode(Data.self, forKey: .cells)
+        cellSizeMapPoints = try container.decode(Double.self, forKey: .cellSizeMapPoints)
+        mapPointsPerMeter = try container.decode(Double.self, forKey: .mapPointsPerMeter)
+        guard data.count % 8 == 0, cellSizeMapPoints.isFinite, cellSizeMapPoints > 0,
+              mapPointsPerMeter.isFinite, mapPointsPerMeter > 0 else { throw SnapshotError.invalidBytes }
+        cells = data.withUnsafeBytes { bytes in
+            var result = Set<Cell>(minimumCapacity: data.count / 8)
+            for offset in stride(from: 0, to: data.count, by: 8) {
+                result.insert(Cell(
+                    x: Int32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: Int32.self)),
+                    y: Int32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset + 4, as: Int32.self))
+                ))
+            }
+            return result
+        }
+    }
 
     init(
         points: [TrackPoint],
