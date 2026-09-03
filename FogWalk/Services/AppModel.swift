@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -37,7 +38,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    let locationManager = LocationManager()
+    let locationManager: LocationManager
     private let store: TrackDataStore
     private var hasStartedLoading = false
     private var revision = 0
@@ -49,10 +50,16 @@ final class AppModel: ObservableObject {
     private var searchGeneration = SearchGeneration()
     private var seenDestinationKeys = Set<String>()
     private var cachedPresentations: [TrackTimeFilter: TrackPresentation] = [:]
+    private var baseGrid: ExplorationGrid?
+    private var recordedPoints: [TrackPoint] = []
+    private var recordingRefreshTask: Task<Void, Never>?
+    private var recordingRefreshInFlight = false
 
-    init(store: TrackDataStore = TrackDataStore(), preferences: UserDefaults = .standard) {
+    init(store: TrackDataStore = TrackDataStore(), preferences: UserDefaults = .standard,
+         recordingStore: RecordingStore = RecordingStore()) {
         self.store = store
         self.preferences = preferences
+        locationManager = LocationManager(preferences: preferences, recordingStore: recordingStore)
         let restored = preferences.data(forKey: "explore-options-v2")
             .flatMap { try? JSONDecoder().decode(ExploreOptions.self, from: $0) }
         exploreOptions = restored ?? ExploreOptions()
@@ -61,9 +68,10 @@ final class AppModel: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
+        locationManager.onSavedPoints = { [weak self] in self?.scheduleRecordingRefresh() }
     }
 
-    var hasData: Bool { (librarySummary?.uniqueCount ?? dataset?.summary.uniqueCount ?? 0) > 0 }
+    var hasData: Bool { !recordedPoints.isEmpty || (librarySummary?.uniqueCount ?? dataset?.summary.uniqueCount ?? 0) > 0 }
     var isWorking: Bool { isLoading || isImporting || isPreparingExport }
 
     var activeCoordinate: GeoCoordinate? {
@@ -87,6 +95,7 @@ final class AppModel: ObservableObject {
     }
 
     func loadStoredDataIfNeeded() {
+        guard UIApplication.shared.applicationState != .background else { return }
         guard !hasStartedLoading else { return }
         hasStartedLoading = true
         #if DEBUG && targetEnvironment(simulator)
@@ -117,6 +126,7 @@ final class AppModel: ObservableObject {
                     NSLog("FOGWALK_STARTUP path=rebuild points=%ld seconds=%.3f", loaded.summary.uniqueCount,
                           ProcessInfo.processInfo.systemUptime - started)
                 }
+                try await refreshRecordedPoints()
             } catch {
                 libraryReadFailed = true
                 noticeTitle = "本地数据读取失败"
@@ -129,6 +139,7 @@ final class AppModel: ObservableObject {
     func importFiles(_ urls: [URL]) {
         guard !urls.isEmpty, !isWorking else { return }
         isImporting = true
+        recordingRefreshTask?.cancel()
         loadingMessage = "正在导入并去重…"
         Task {
             do {
@@ -142,6 +153,7 @@ final class AppModel: ObservableObject {
                 try await store.save(loaded)
                 loadingMessage = "正在更新地图与迷雾…"
                 try await install(loaded)
+                try await refreshRecordedPoints()
                 noticeTitle = "导入完成"
                 noticeMessage = "已保存 \(loaded.summary.uniqueCount.formatted()) 个唯一位置。以后启动会直接读取本地档案，重复导入的数据不会重复计数。"
             } catch {
@@ -186,6 +198,11 @@ final class AppModel: ObservableObject {
     func selectFilter(_ filter: TrackTimeFilter) {
         guard filter != selectedFilter else { return }
         selectedFilter = filter
+        if !recordedPoints.isEmpty {
+            rebuildTask?.cancel()
+            rebuildTask = Task { await rebuildRecordedFilter(filter) }
+            return
+        }
         if let cached = cachedPresentations[filter] {
             presentation = cached
             return
@@ -288,6 +305,8 @@ final class AppModel: ObservableObject {
     private func applyStartup(_ snapshot: RestoredStartup) {
         librarySummary = snapshot.summary
         explorationGrid = snapshot.grid
+        baseGrid = snapshot.grid
+        recordedPoints = []
         // Revisions must change after an import even when cached filter IDs match.
         explorationRevision += 10
         cachedPresentations = snapshot.presentations.mapValues { value in
@@ -298,15 +317,91 @@ final class AppModel: ObservableObject {
         }
         explorationPresentation = cachedPresentations[.lifetime] ?? .empty
         presentation = cachedPresentations[selectedFilter] ?? .empty
-        isLoading = false
     }
 
     private func fullDataset() async throws -> TrackDataset? {
-        if let dataset { return dataset }
-        let loaded = try await store.load()
-        if hasData && loaded == nil { throw TrackDataStoreError.emptyArchive }
-        dataset = loaded
-        return loaded
+        if dataset == nil { dataset = try await store.load() }
+        if (librarySummary?.uniqueCount ?? 0) > 0 && dataset == nil { throw TrackDataStoreError.emptyArchive }
+        let batch = try await locationManager.recordingStore.read(after: dataset?.summary.recordingCheckpoint)
+        let original = dataset
+        guard !batch.points.isEmpty else { return original }
+        return await Task.detached(priority: .userInitiated) { TrackDataLoader.merging(batch, into: original) }.value
+    }
+
+    func applicationBecameActive() {
+        locationManager.setBackground(false)
+        locationManager.restoreRecordingIfNeeded()
+        locationManager.requestCurrentLocation()
+        if !hasStartedLoading { loadStoredDataIfNeeded() }
+        if hasStartedLoading && !isLoading { scheduleRecordingRefresh(immediately: true) }
+    }
+
+    private func scheduleRecordingRefresh(immediately: Bool = false) {
+        guard UIApplication.shared.applicationState == .active, recordingRefreshTask == nil else { return }
+        recordingRefreshTask = Task { [weak self] in
+            if !immediately { try? await Task.sleep(for: .seconds(15)) }
+            guard let self else { return }
+            defer { recordingRefreshTask = nil }
+            guard !Task.isCancelled, UIApplication.shared.applicationState == .active, !isWorking else { return }
+            do { try await refreshRecordedPoints() }
+            catch { noticeTitle = "新足迹恢复失败"; noticeMessage = error.localizedDescription }
+        }
+    }
+
+    private func refreshRecordedPoints() async throws {
+        guard !recordingRefreshInFlight else { return }
+        recordingRefreshInFlight = true
+        defer { recordingRefreshInFlight = false }
+        let batch = try await locationManager.recordingStore.read(after: librarySummary?.recordingCheckpoint)
+        guard batch.points != recordedPoints else { return }
+        let base = baseGrid ?? ExplorationGrid(coordinates: [])
+        let originals = cachedPresentations
+        explorationRevision += 10
+        let revision = explorationRevision
+        let selected = selectedFilter
+        let result = await Task.detached(priority: .userInitiated) {
+            let recent = TrackDataLoader.merging(batch, into: nil)
+            let lifetime = TrackProcessor.makePresentation(dataset: recent, filter: .lifetime, revision: revision)
+            let today = TrackProcessor.makePresentation(dataset: recent, filter: .today, revision: revision + 1)
+            let combined = Self.combine(originals[.lifetime] ?? .empty, lifetime, revision: revision)
+            let originalToday = originals[.today] ?? .empty
+            let sameDay = originalToday.referenceDate.map { first in
+                today.referenceDate.map { Calendar.current.isDate(first, inSameDayAs: $0) } ?? true
+            } ?? false
+            let day = Self.combine(sameDay ? originalToday : .empty, today, revision: revision + 1)
+            return (base.incorporating(batch.points), combined, selected == .lifetime ? combined : day)
+        }.value
+        guard !Task.isCancelled, explorationRevision == revision else { return }
+        recordedPoints = batch.points
+        explorationGrid = result.0
+        explorationPresentation = result.1
+        presentation = result.2
+        if selectedFilter == .sevenDays || selectedFilter == .month { await rebuildRecordedFilter(selectedFilter) }
+        // New accepted positions can make a previous recommendation familiar.
+        recommendations.removeAll { result.0.isExplored($0.coordinate) }
+    }
+
+    nonisolated private static func combine(_ first: TrackPresentation, _ second: TrackPresentation, revision: Int) -> TrackPresentation {
+        TrackPresentation(revision: revision, filter: second.visiblePointCount > 0 ? second.filter : first.filter,
+            segments: (first.segments + second.segments).enumerated().map { TrackSegment(id: $0.offset, coordinates: $0.element.coordinates) },
+            isolatedPoints: first.isolatedPoints + second.isolatedPoints,
+            visiblePointCount: first.visiblePointCount + second.visiblePointCount,
+            totalDistanceMeters: first.totalDistanceMeters + second.totalDistanceMeters,
+            referenceDate: second.referenceDate ?? first.referenceDate,
+            latestCoordinate: second.latestCoordinate ?? first.latestCoordinate)
+    }
+
+    private func rebuildRecordedFilter(_ filter: TrackTimeFilter) async {
+        do {
+            guard let combined = try await fullDataset() else { return }
+            revision += 1
+            let target = revision
+            let value = await Task.detached(priority: .userInitiated) {
+                TrackProcessor.makePresentation(dataset: combined, filter: filter, revision: target)
+            }.value
+            guard !Task.isCancelled, selectedFilter == filter else { return }
+            presentation = value
+        } catch { noticeTitle = "足迹读取失败"; noticeMessage = error.localizedDescription }
     }
 
     private func rebuildPresentation(filter: TrackTimeFilter) async {

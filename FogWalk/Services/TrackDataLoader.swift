@@ -71,6 +71,7 @@ struct TrackDataLoader: Sendable {
         var recordedCSVCount = existing?.summary.recordedCSVCount ?? 0
         var photoCSVCount = existing?.summary.photoCSVCount ?? 0
         var gpxCount = existing?.summary.gpxCount ?? 0
+        var recordedDeviceCount = existing?.summary.recordedDeviceCount ?? 0
 
         for url in urls {
             let didAccess = url.startAccessingSecurityScopedResource()
@@ -100,6 +101,7 @@ struct TrackDataLoader: Sendable {
                 recordedCSVCount += imported.summary.recordedCSVCount
                 photoCSVCount += imported.summary.photoCSVCount
                 gpxCount += imported.summary.gpxCount
+                recordedDeviceCount += imported.summary.recordedDeviceCount ?? 0
             default:
                 throw TrackDataError.unsupportedFile(url.lastPathComponent)
             }
@@ -110,15 +112,28 @@ struct TrackDataLoader: Sendable {
             points: points,
             recordedCSVCount: recordedCSVCount,
             photoCSVCount: photoCSVCount,
-            gpxCount: gpxCount
+            gpxCount: gpxCount,
+            recordedDeviceCount: recordedDeviceCount,
+            checkpoint: existing?.summary.recordingCheckpoint
         )
+    }
+
+    static func merging(_ batch: RecordedBatch, into existing: TrackDataset?) -> TrackDataset {
+        makeDataset(points: (existing?.points ?? []) + batch.points,
+                    recordedCSVCount: existing?.summary.recordedCSVCount ?? 0,
+                    photoCSVCount: existing?.summary.photoCSVCount ?? 0,
+                    gpxCount: existing?.summary.gpxCount ?? 0,
+                    recordedDeviceCount: (existing?.summary.recordedDeviceCount ?? 0) + batch.points.count,
+                    checkpoint: batch.checkpoint)
     }
 
     private static func makeDataset(
         points: [TrackPoint],
         recordedCSVCount: Int,
         photoCSVCount: Int,
-        gpxCount: Int
+        gpxCount: Int,
+        recordedDeviceCount: Int = 0,
+        checkpoint: RecordingCheckpoint? = nil
     ) -> TrackDataset {
         var seen = Set<TrackPointKey>(minimumCapacity: points.count)
         var unique = [TrackPoint]()
@@ -143,7 +158,7 @@ struct TrackDataLoader: Sendable {
                 source: point.source
             )
         }
-        let rawCount = recordedCSVCount + photoCSVCount + gpxCount
+        let rawCount = recordedCSVCount + photoCSVCount + gpxCount + recordedDeviceCount
 
         return TrackDataset(
             points: unique,
@@ -154,7 +169,9 @@ struct TrackDataLoader: Sendable {
                 duplicateCount: max(0, rawCount - unique.count),
                 uniqueCount: unique.count,
                 earliestDate: unique.first?.timestamp,
-                latestDate: unique.last?.timestamp
+                latestDate: unique.last?.timestamp,
+                recordedDeviceCount: recordedDeviceCount == 0 ? nil : recordedDeviceCount,
+                recordingCheckpoint: checkpoint
             )
         )
     }

@@ -28,6 +28,12 @@
 	<string>获取当前位置，用于记录足迹并推荐附近的未知区域。</string>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>NSMotionUsageDescription</key>
+	<string>判断步行、乘车或静止，自动调整足迹记录的定位强度；不采集原始加速度数据。</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>

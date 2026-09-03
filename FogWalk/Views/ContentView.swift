@@ -2,12 +2,13 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject private var model = AppModel()
+    @StateObject private var model = AppRuntime.model
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
     @State private var exportDocument: FogWalkArchiveDocument?
     @State private var isLayersPresented = false
     @State private var isReviewPresented = false
+    @State private var isRecordingPresented = ProcessInfo.processInfo.arguments.contains("--open-recording")
 
     var body: some View {
         mapExperience
@@ -18,6 +19,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isLayersPresented) { layerPanel.presentationDetents([.height(280)]) }
         .sheet(isPresented: $isReviewPresented) { reviewPanel.presentationDetents([.height(320)]) }
+        .sheet(isPresented: $isRecordingPresented) { RecordingPanel(recorder: model.locationManager) }
         .fileImporter(
             isPresented: $isImporterPresented,
             allowedContentTypes: [.commaSeparatedText, .gpx, .xml, .fogWalkArchive],
@@ -125,11 +127,14 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             Spacer(minLength: 8)
-            if model.locationManager.isRecording {
-                Label("定位测试中", systemImage: "location.fill")
-                    .font(.caption2).foregroundStyle(.green)
+            Button { isRecordingPresented = true } label: {
+                Label(model.locationManager.isRecording ? "记录中" : "记录", systemImage: "record.circle")
+                    .font(.caption).foregroundStyle(model.locationManager.isRecording ? .green : .primary)
+                    .padding(.horizontal, 12)
                     .frame(height: 44)
+                    .background(.regularMaterial, in: Capsule())
             }
+            .buttonStyle(.plain)
 
             Menu {
                 Button {
@@ -148,11 +153,9 @@ struct ContentView: View {
                     isLayersPresented = true
                 } label: { Label("地图图层", systemImage: "square.3.layers.3d") }
                 Button {
-                    model.locationManager.toggleRecording()
-                    model.noticeTitle = "前台定位测试"
-                    model.noticeMessage = "当前只更新实时位置，尚未持续保存新足迹。锁屏记录和完整记录功能将在下一阶段实现。"
+                    isRecordingPresented = true
                 } label: {
-                    Label(model.locationManager.isRecording ? "停止定位测试" : "前台定位测试", systemImage: "location")
+                    Label("出行记录与省电设置", systemImage: "location")
                 }
             } label: {
                 Image(systemName: "ellipsis")

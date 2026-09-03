@@ -5,6 +5,7 @@ enum TrackSource: String, Sendable, Codable {
     case recordedCSV
     case photoCSV
     case gpx
+    case recordedDevice
 }
 
 struct GeoCoordinate: Hashable, Sendable, Codable {
@@ -64,6 +65,8 @@ struct ImportSummary: Sendable, Equatable, Codable {
     let uniqueCount: Int
     let earliestDate: Date?
     let latestDate: Date?
+    var recordedDeviceCount: Int? = nil
+    var recordingCheckpoint: RecordingCheckpoint? = nil
 }
 
 struct TrackDataset: Sendable, Codable {

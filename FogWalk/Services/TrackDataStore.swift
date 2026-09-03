@@ -16,7 +16,7 @@ enum TrackDataStoreError: LocalizedError {
 }
 
 struct TrackArchive: Codable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let exportedAt: Date
@@ -38,7 +38,7 @@ enum TrackArchiveCodec {
 
     static func decode(_ data: Data) throws -> TrackDataset {
         let archive = try PropertyListDecoder().decode(TrackArchive.self, from: data)
-        guard archive.version == TrackArchive.currentVersion else {
+        guard (1...TrackArchive.currentVersion).contains(archive.version) else {
             throw TrackDataStoreError.unsupportedArchiveVersion(archive.version)
         }
         guard !archive.dataset.points.isEmpty else {

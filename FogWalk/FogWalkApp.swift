@@ -1,11 +1,38 @@
 import SwiftUI
 
-@main
-struct FogWalkApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
+@MainActor
+enum AppRuntime {
+    static let model = AppModel()
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Re-establish only a previously user-enabled recording session.
+        AppRuntime.model.locationManager.setBackground(application.applicationState == .background)
+        AppRuntime.model.locationManager.restoreRecordingIfNeeded()
+        return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        AppRuntime.model.applicationBecameActive()
+    }
+
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        AppRuntime.model.locationManager.setBackground(true)
     }
 }
 
+@main
+struct FogWalkApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @Environment(\.scenePhase) private var scenePhase
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { AppRuntime.model.applicationBecameActive() }
+                    else if phase == .background { AppRuntime.model.locationManager.setBackground(true) }
+                }
+        }
+    }
+}

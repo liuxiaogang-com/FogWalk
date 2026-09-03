@@ -12,7 +12,7 @@ struct ExplorationGrid: Sendable, Codable {
 
     static let defaultExplorationRadiusMeters: Double = 50
 
-    private let cells: Set<Cell>
+    private var cells: Set<Cell>
     private let cellSizeMapPoints: Double
     private let mapPointsPerMeter: Double
 
@@ -126,6 +126,31 @@ struct ExplorationGrid: Sendable, Codable {
 
     func isExplored(_ coordinate: GeoCoordinate) -> Bool {
         cells.contains(cell(for: MKMapPoint(coordinate.clCoordinate)))
+    }
+
+    func incorporating(_ points: [TrackPoint]) -> ExplorationGrid {
+        var result = self
+        var previous: TrackPoint?
+        var previousMapPoint: MKMapPoint?
+        for point in points {
+            let coordinate = ChinaCoordinateTransform.mapCoordinate(for: point.coordinate)
+            let mapped = MKMapPoint(coordinate.clCoordinate)
+            Self.fillCells(around: mapped, radiusMeters: Self.defaultExplorationRadiusMeters,
+                           cellSizeMapPoints: cellSizeMapPoints, mapPointsPerMeter: mapPointsPerMeter, into: &result.cells)
+            if let previous, let source = previousMapPoint, TrackProcessor.canConnect(previous, point) {
+                let count = max(1, Int(ceil(hypot(mapped.x - source.x, mapped.y - source.y) / (20 * mapPointsPerMeter))))
+                for step in 1..<count {
+                    let t = Double(step) / Double(count)
+                    Self.fillCells(around: MKMapPoint(x: source.x + (mapped.x - source.x) * t,
+                                                     y: source.y + (mapped.y - source.y) * t),
+                                   radiusMeters: Self.defaultExplorationRadiusMeters,
+                                   cellSizeMapPoints: cellSizeMapPoints, mapPointsPerMeter: mapPointsPerMeter, into: &result.cells)
+                }
+            }
+            previous = point
+            previousMapPoint = mapped
+        }
+        return result
     }
 
     func noveltyRatio(along coordinates: [GeoCoordinate]) -> Double {
