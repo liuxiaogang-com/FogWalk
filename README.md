@@ -1,0 +1,80 @@
+# 迷雾足迹 Demo
+
+一个使用 SwiftUI、MapKit 和 Core Location 制作的原生 iPhone Demo。它导入“一生足迹”导出的照片位置 CSV、轨迹 CSV 与 GPX，在 Apple 地图上显示可信轨迹，并用战争迷雾表现已探索和未探索区域。
+
+完整、已确认的需求与技术规则见 [PRODUCT_SPEC.md](PRODUCT_SPEC.md)。
+
+## 当前已实现
+
+- 原生 iOS 26 SwiftUI 工程；
+- 空库启动，App 安装包不内置任何个人 CSV、GPX 或足迹档案；
+- 从系统“文件”选择器一次选择一个或多个轨迹 CSV、照片位置 CSV、GPX 或 `.fogwalk` 备份；
+- 150,664 条轨迹 CSV、150,664 条 GPX 和 3,519 条照片位置 CSV 的完整解析验证；
+- 按时间戳和约 10 米坐标精度去重，得到 154,183 个唯一位置；
+- 导入后写入 App 的 Application Support 二进制档案，后续启动直接恢复，无需再次解析 CSV/GPX；
+- 从右上角数据菜单导出单个 `.fogwalk` 备份文件，可再次导入或用于换机；
+- 5 分钟 / 300 米 / 100 米定位精度 / 65 m/s 推算速度的可信连接规则；
+- 今日、七日、本月、一生筛选和可信距离统计；
+- MapKit 自定义迷雾：0–50 米清晰、50–100 米渐变、外部暗雾；
+- 中国大陆 WGS-84 到 Apple 地图坐标的显示边界校准，原始导入和导出数据保持不变；
+- 单独的橙色轨迹覆盖层；
+- 前台定位和记录状态框架；
+- 地图主体首页、紧凑状态与带文字的迷雾 / 轨迹 / 定位控制，“去探索”作为底部主操作；
+- 全屏目的地探索地图，参数面板可收起，推荐路线与终点先在本 App 的历史迷雾中查看；
+- 探索页默认以当前定位为中心显示约 3 公里的局部地图，GPS 暂不可用时使用最近导入位置；
+- 默认开启迷雾并关闭历史轨迹线，仍可从首页手动切换；
+- 首页定位按钮会回到实时位置，并恢复约 3 公里的固定缩放；
+- 咖啡厅和餐饮使用结构化 POI、中文品类词与常见品牌词组合检索，仍优先选择未探索终点；
+- 搜索结果最多显示 6 个地图标记；底部卡片横向滑动并露出下一项，滑卡或点击标记都会同步切换目的地与路线；
+- 独立的地图选点模式：长按落点、解析地址、显示探索状态和直线距离，再决定是否导航；
+- 25 米栅格表达 50 米探索半径，可信轨迹段插值；已探索终点硬性排除；
+- MapKit 结构化 POI 与中文自然语言搜索兜底、明确命名终点、路线与真实 ETA；
+- 按沿途未知、终点周边未知和时间预算综合排序，最终再打开 Apple 地图导航；
+- XCTest 数据、阈值、可见几何和闭环框架测试。
+
+## 本地运行
+
+打开：
+
+```text
+FogWalk.xcodeproj
+```
+
+选择 `FogWalk` Scheme 和 iOS 26 模拟器运行。首次启动为空库，通过首页“选择文件”或右上角菜单导入数据。
+
+命令行构建：
+
+```sh
+xcodebuild -project FogWalk.xcodeproj -scheme FogWalk \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build
+```
+
+命令行测试：
+
+```sh
+xcodebuild test -project FogWalk.xcodeproj -scheme FogWalk \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
+  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
+```
+
+## 当前边界
+
+- 闭环模式目前已从界面隐藏；真正的低重合道路环线需要下一阶段接入局部 OSM 路网并做图搜索。
+- 目的地模式已调用 MapKit 搜索和路线服务，但结果依赖网络和当地 Apple 地图数据。
+- 当前使用单个本地二进制档案；后续如果数据量继续显著增加，可迁移为分块数据库与增量索引。
+- 后台持续定位、电量、系统终止恢复、实际导航与权限流程必须等用户明确提出后在真机验证。
+- App 已完成开发签名，并安装启动于用户的 iPhone 16 Pro；状态见 `PRODUCT_SPEC.md` 的最新实现记录。
+
+## 视觉验收截图
+
+- `artifacts/fogwalk-home-corridor.png`：首页、迷雾通道和真实轨迹。
+- `artifacts/fogwalk-explore-sheet.png`：探索参数面板。
+- `artifacts/fogwalk-empty-import.png`：不携带个人数据的空库导入首页。
+- `artifacts/fogwalk-dark-fog-v3.png`：坐标校准后的深色地图与连续羽化迷雾。
+- `artifacts/main-redesign.png`：以地图和“去探索”为核心的新首页。
+- `artifacts/explore-redesign-options.png`：完整二级探索地图与可收起参数面板。
+- `artifacts/explore-manual-selection.png`：不挤占推荐卡的长按地图选点模式。
+- `artifacts/explore-minimal-options.png`：精简为三项下拉条件与单一主操作的探索面板。
+- `artifacts/explore-current-center-fog-only.png`：当前位置局部视野与默认仅迷雾状态。
+- `artifacts/explore-place-map-layout.png`：条件置顶与地点地图式结果入口布局。

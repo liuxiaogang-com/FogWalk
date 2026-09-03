@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+xcuserdata/
+*.xcuserstate
+demodata/
+artifacts/
+*.fogwalk
+*.xcresult/
+*.ipa
+*.log
