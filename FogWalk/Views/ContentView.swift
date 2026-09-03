@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
     @State private var exportDocument: FogWalkArchiveDocument?
+    @State private var isLayersPresented = false
+    @State private var isReviewPresented = false
 
     var body: some View {
         ZStack {
@@ -20,6 +22,8 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $model.isExploreSheetPresented) {
             ExploreSheet(model: model)
         }
+        .sheet(isPresented: $isLayersPresented) { layerPanel.presentationDetents([.height(280)]) }
+        .sheet(isPresented: $isReviewPresented) { reviewPanel.presentationDetents([.height(320)]) }
         .fileImporter(
             isPresented: $isImporterPresented,
             allowedContentTypes: [.commaSeparatedText, .gpx, .xml, .fogWalkArchive],
@@ -60,31 +64,43 @@ struct ContentView: View {
     private var mapExperience: some View {
         ZStack {
             FogMapView(
-                presentation: model.presentation,
+                presentation: model.explorationPresentation,
                 isFogVisible: model.isFogVisible && model.hasData,
                 isTrackVisible: model.isTrackVisible,
                 currentCoordinate: model.activeCoordinate,
+                liveCurrentCoordinate: model.liveMapCoordinate,
+                centersOnCurrentCoordinate: true,
+                initialSpanMeters: 3_000,
                 recenterCoordinate: model.liveMapCoordinate,
                 recenterRequestID: model.mainMapRecenterRequestID,
-                recenterSpanMeters: 3_000
+                recenterSpanMeters: 3_000,
+                trackPresentation: model.presentation,
+                overviewRequestID: model.mainMapOverviewRequestID
             )
             .ignoresSafeArea()
-
-            if !model.hasData {
-                emptyLibraryCard
-            }
 
             VStack(spacing: 10) {
                 topBar
                 Spacer()
-                if model.hasData {
-                    HStack {
-                        Spacer()
-                        mapControls
+                HStack {
+                    if model.liveMapCoordinate == nil {
+                        Text(model.hasData ? "暂以最近足迹为参考位置" : "定位后即可探索，无需先导入")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .padding(10).background(.regularMaterial, in: Capsule())
                     }
-                    exploreButton
-                    filterPicker
+                    Spacer(minLength: 0)
+                    mapControls
                 }
+                exploreButton
+                Button {
+                    if model.hasData { isReviewPresented = true } else { isImporterPresented = true }
+                } label: {
+                    Label(model.hasData ? "回看足迹 · \(model.selectedFilter.rawValue)" : "已有足迹？导入备份",
+                          systemImage: model.hasData ? "calendar" : "square.and.arrow.down")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -98,22 +114,19 @@ struct ContentView: View {
 
     private var topBar: some View {
         HStack(alignment: .top, spacing: 8) {
-            if model.hasData { statsCard }
-            Spacer(minLength: 8)
-            Button {
-                model.locationManager.toggleRecording()
-            } label: {
-                Label(
-                    model.locationManager.isRecording ? "记录中" : "开始记录",
-                    systemImage: model.locationManager.isRecording ? "pause.fill" : "record.circle"
-                )
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(model.locationManager.isRecording ? .green : .primary)
-                .padding(.horizontal, 10)
-                .frame(height: 36)
-                .background(.ultraThinMaterial, in: Capsule())
+            Button { isReviewPresented = true } label: {
+                Label("足迹", systemImage: "map")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14).frame(height: 44)
+                    .background(.regularMaterial, in: Capsule())
             }
             .buttonStyle(.plain)
+            Spacer(minLength: 8)
+            if model.locationManager.isRecording {
+                Label("定位测试中", systemImage: "location.fill")
+                    .font(.caption2).foregroundStyle(.green)
+                    .frame(height: 44)
+            }
 
             Menu {
                 Button {
@@ -127,14 +140,24 @@ struct ContentView: View {
                     Label("导出备份", systemImage: "square.and.arrow.up")
                 }
                 .disabled(!model.hasData)
+                Button {
+                    isLayersPresented = true
+                } label: { Label("地图图层", systemImage: "square.3.layers.3d") }
+                Button {
+                    model.locationManager.toggleRecording()
+                    model.noticeTitle = "前台定位测试"
+                    model.noticeMessage = "当前只更新实时位置，尚未持续保存新足迹。锁屏记录和完整记录功能将在下一阶段实现。"
+                } label: {
+                    Label(model.locationManager.isRecording ? "停止定位测试" : "前台定位测试", systemImage: "location")
+                }
             } label: {
-                Image(systemName: "arrow.up.arrow.down")
+                Image(systemName: "ellipsis")
                     .font(.caption.bold())
                     .foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
             }
-            .accessibilityLabel("导入与导出")
+            .accessibilityLabel("更多：数据与地图设置")
         }
     }
 
@@ -169,25 +192,43 @@ struct ContentView: View {
 
     private var mapControls: some View {
         HStack(spacing: 7) {
-            controlButton(
-                icon: model.isFogVisible ? "cloud.fog.fill" : "cloud.fog",
-                label: model.isFogVisible ? "迷雾开" : "迷雾关",
-                isActive: model.isFogVisible
-            ) {
-                model.isFogVisible.toggle()
-            }
-            .disabled(!model.hasData)
-            controlButton(
-                icon: model.isTrackVisible ? "point.bottomleft.forward.to.point.topright.scurvepath" : "eye.slash",
-                label: model.isTrackVisible ? "轨迹开" : "轨迹关",
-                isActive: model.isTrackVisible
-            ) {
-                model.isTrackVisible.toggle()
-            }
-            .disabled(!model.hasData)
+            controlButton(icon: "square.3.layers.3d", label: "图层", isActive: false) { isLayersPresented = true }
             controlButton(icon: "location.fill", label: "定位", isActive: false) {
                 model.recenterMainMap()
             }
+        }
+    }
+
+    private var layerPanel: some View {
+        NavigationStack {
+            Form {
+                Toggle("显示探索迷雾", isOn: $model.isFogVisible)
+                Toggle("显示历史轨迹", isOn: $model.isTrackVisible)
+                Text("迷雾始终依据全部足迹；日期筛选只改变历史轨迹。已探索核心半径为 50 米。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .navigationTitle("地图图层").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("完成") { isLayersPresented = false } }
+        }
+    }
+
+    private var reviewPanel: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
+                filterPicker
+                statsCard
+                Text(model.hasData ? "查看指定时间的历史轨迹，不会重新遮住过去探索过的区域。" : "还没有历史足迹，可以先探索或从更多菜单导入。")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Button("在地图查看轨迹") {
+                    model.isTrackVisible = true
+                    model.mainMapOverviewRequestID &+= 1
+                    isReviewPresented = false
+                }
+                .buttonStyle(.borderedProminent).tint(.orange).disabled(!model.hasData)
+                Spacer()
+            }
+            .padding(20).navigationTitle("足迹回顾").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("完成") { isReviewPresented = false } }
         }
     }
 
@@ -292,7 +333,7 @@ struct ContentView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(isActive ? .orange : .primary)
                 .padding(.horizontal, 10)
-                .frame(height: 36)
+                .frame(height: 44)
                 .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)

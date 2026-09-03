@@ -17,10 +17,23 @@ final class AppModel: ObservableObject {
     @Published var isFogVisible = !ProcessInfo.processInfo.arguments.contains("--fog-off")
     @Published var isTrackVisible = false
     @Published private(set) var mainMapRecenterRequestID = 0
+    @Published var mainMapOverviewRequestID = 0
     @Published var isExploreSheetPresented = ProcessInfo.processInfo.arguments.contains("--open-explore")
     @Published var recommendations: [ExploreRecommendation] = []
     @Published var isGeneratingRecommendations = false
     @Published var exploreErrorMessage: String?
+    @Published var selectedRecommendationID: UUID?
+    @Published var exploreBatchNotice: String?
+    @Published var exploreOptions: ExploreOptions {
+        didSet {
+            guard oldValue != exploreOptions else { return }
+            if let data = try? JSONEncoder().encode(exploreOptions) {
+                preferences.set(data, forKey: "explore-options-v2")
+            }
+            clearRecommendations()
+            seenDestinationKeys = []
+        }
+    }
 
     let locationManager = LocationManager()
     private let store: TrackDataStore
@@ -29,9 +42,17 @@ final class AppModel: ObservableObject {
     private var explorationRevision = 10_000
     private var rebuildTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
+    private let preferences: UserDefaults
+    private var searchTask: Task<Void, Never>?
+    private var searchGeneration = SearchGeneration()
+    private var seenDestinationKeys = Set<String>()
 
-    init(store: TrackDataStore = TrackDataStore()) {
+    init(store: TrackDataStore = TrackDataStore(), preferences: UserDefaults = .standard) {
         self.store = store
+        self.preferences = preferences
+        let restored = preferences.data(forKey: "explore-options-v2")
+            .flatMap { try? JSONDecoder().decode(ExploreOptions.self, from: $0) }
+        exploreOptions = restored ?? ExploreOptions()
         locationManager.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -65,6 +86,18 @@ final class AppModel: ObservableObject {
     func loadStoredDataIfNeeded() {
         guard !hasStartedLoading else { return }
         hasStartedLoading = true
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+            recommendations = UIFixture.recommendations
+            selectedRecommendationID = recommendations.first?.id
+            if ProcessInfo.processInfo.arguments.contains("--fixture-error") {
+                recommendations = []
+                exploreErrorMessage = "附近暂未找到未探索的这类地点。可以更换类型，或主动增加时间。"
+            }
+            isLoading = false
+            return
+        }
+        #endif
         isLoading = true
         loadingMessage = "正在读取本地足迹…"
 
@@ -145,24 +178,46 @@ final class AppModel: ObservableObject {
     }
 
     func clearRecommendations() {
+        cancelSearch()
         recommendations = []
+        selectedRecommendationID = nil
         exploreErrorMessage = nil
+        exploreBatchNotice = nil
+    }
+
+    func cancelSearch() {
+        _ = searchGeneration.advance()
+        searchTask?.cancel()
+        searchTask = nil
+        isGeneratingRecommendations = false
+    }
+
+    func searchDestinations(changeBatch: Bool = false) {
+        generateRecommendations(mode: .destination, minutes: exploreOptions.minutes,
+                                travelMode: exploreOptions.travelMode, category: exploreOptions.category,
+                                changeBatch: changeBatch)
     }
 
     func generateRecommendations(
         mode: ExploreMode,
         minutes: Int,
         travelMode: ExploreTravelMode,
-        category: ExploreCategory
+        category: ExploreCategory,
+        changeBatch: Bool = false
     ) {
-        guard let start = activeCoordinate, let explorationGrid else {
-            exploreErrorMessage = "请先导入足迹，并允许 App 获取当前位置。"
+        cancelSearch()
+        guard let start = activeCoordinate else {
+            locationManager.requestCurrentLocation()
+            exploreErrorMessage = "尚未获得定位。请允许位置访问，定位后点击重试。"
             return
         }
-        recommendations = []
+        let grid = explorationGrid ?? ExplorationGrid(coordinates: [])
+        let generation = searchGeneration.value
+        if changeBatch { seenDestinationKeys.formUnion(recommendations.map(\.stableKey)) }
         exploreErrorMessage = nil
+        exploreBatchNotice = nil
         isGeneratingRecommendations = true
-        Task {
+        searchTask = Task {
             do {
                 let result = try await ExplorePlanner().recommendations(
                     start: start,
@@ -170,16 +225,25 @@ final class AppModel: ObservableObject {
                     minutes: minutes,
                     travelMode: travelMode,
                     category: category,
-                    explorationGrid: explorationGrid
+                    explorationGrid: grid,
+                    excluding: changeBatch ? seenDestinationKeys : []
                 )
+                guard !Task.isCancelled, searchGeneration.accepts(generation) else { return }
                 recommendations = result
+                selectedRecommendationID = result.first?.id
+                if changeBatch, !result.isEmpty, result.allSatisfy({ seenDestinationKeys.contains($0.stableKey) }) {
+                    exploreBatchNotice = "这个范围内暂无更多新地点，已保留可用候选。"
+                }
                 if result.isEmpty {
                     exploreErrorMessage = "附近暂时没有符合条件的地点，请增加时间或更换类型。"
                 }
             } catch {
+                guard !Task.isCancelled, searchGeneration.accepts(generation) else { return }
                 exploreErrorMessage = error.localizedDescription
             }
+            guard searchGeneration.accepts(generation) else { return }
             isGeneratingRecommendations = false
+            searchTask = nil
         }
     }
 

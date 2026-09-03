@@ -1,10 +1,18 @@
 import Foundation
 import MapKit
 
+@MainActor
+private final class MapServiceCancellation {
+    var directions: MKDirections?
+    var search: MKLocalSearch?
+    func cancel() { directions?.cancel(); search?.cancel() }
+}
+
 enum ExplorePlannerError: LocalizedError {
     case loopTemporarilyUnavailable
     case placeSearchUnavailable
     case noNamedDestination
+    case noRouteWithinBudget
 
     var errorDescription: String? {
         switch self {
@@ -13,13 +21,18 @@ enum ExplorePlannerError: LocalizedError {
         case .placeSearchUnavailable:
             return "Apple 地图地点服务暂时没有响应，请稍后再试。"
         case .noNamedDestination:
-            return "这个时间范围内没有找到合适的明确终点，请增加时间或更换地点类型。"
+            return "附近暂未找到未探索的这类地点。可以更换类型，或主动增加时间。"
+        case .noRouteWithinBudget:
+            return "找到了目的地，但可用路线超过单程时间预算。请增加时间后重试。"
         }
     }
 }
 
 @MainActor
 struct ExplorePlanner {
+    static func fitsBudget(seconds: Double, minutes: Int) -> Bool {
+        seconds.isFinite && seconds >= 0 && minutes > 0 && seconds <= Double(minutes * 60)
+    }
     private struct ScoredRecommendation {
         let recommendation: ExploreRecommendation
         let score: Double
@@ -31,7 +44,8 @@ struct ExplorePlanner {
         minutes: Int,
         travelMode: ExploreTravelMode,
         category: ExploreCategory,
-        explorationGrid: ExplorationGrid
+        explorationGrid: ExplorationGrid,
+        excluding: Set<String> = []
     ) async throws -> [ExploreRecommendation] {
         guard mode == .destination else {
             throw ExplorePlannerError.loopTemporarilyUnavailable
@@ -41,7 +55,8 @@ struct ExplorePlanner {
             minutes: minutes,
             travelMode: travelMode,
             category: category,
-            explorationGrid: explorationGrid
+            explorationGrid: explorationGrid,
+            excluding: excluding
         )
     }
 
@@ -50,7 +65,8 @@ struct ExplorePlanner {
         minutes: Int,
         travelMode: ExploreTravelMode,
         category: ExploreCategory,
-        explorationGrid: ExplorationGrid
+        explorationGrid: ExplorationGrid,
+        excluding: Set<String>
     ) async throws -> [ExploreRecommendation] {
         let targetDistance = travelMode.estimatedMetersPerSecond * Double(minutes * 60)
         let radius = min(max(targetDistance * 1.5, 1_200), 50_000)
@@ -89,7 +105,7 @@ struct ExplorePlanner {
             }
             .filter {
                 $0.distance >= targetDistance * 0.12
-                    && $0.distance <= radius
+                    && $0.distance <= targetDistance
             }
 
         // The endpoint itself must always be outside the explored 50 m raster.
@@ -105,8 +121,17 @@ struct ExplorePlanner {
         guard !preselected.isEmpty else { throw ExplorePlannerError.noNamedDestination }
 
         var verifiedRecommendations = [ScoredRecommendation]()
-        for candidate in preselected.prefix(12) {
-            if let verified = try? await routeRecommendation(
+        var unresolvedItems = Set<String>()
+        var overBudgetCount = 0
+        let routeCandidates = preselected.sorted {
+            let left = excluding.contains(Self.destinationKey($0.item))
+            let right = excluding.contains(Self.destinationKey($1.item))
+            return left == right ? $0.score > $1.score : !left
+        }
+        for candidate in routeCandidates.prefix(12) {
+            try Task.checkCancellation()
+            do {
+                let verified = try await routeRecommendation(
                 start: start,
                 mapItem: candidate.item,
                 requestedMinutes: minutes,
@@ -114,21 +139,27 @@ struct ExplorePlanner {
                 explorationGrid: explorationGrid,
                 destinationNovelty: candidate.destinationNovelty,
                 placePriority: candidate.placePriority
-            ) {
+                )
                 verifiedRecommendations.append(verified)
+            } catch ExplorePlannerError.noRouteWithinBudget {
+                overBudgetCount += 1
+            } catch {
+                try Task.checkCancellation()
+                unresolvedItems.insert(Self.destinationKey(candidate.item))
             }
         }
         if !verifiedRecommendations.isEmpty {
-            return verifiedRecommendations
+            let ranked = verifiedRecommendations
                 .sorted { $0.score > $1.score }
-                .prefix(6)
                 .map(\.recommendation)
+            return Self.diverseResults(ranked, excluding: excluding)
         }
+        if unresolvedItems.isEmpty, overBudgetCount > 0 { throw ExplorePlannerError.noRouteWithinBudget }
 
         // A named endpoint remains useful even when MKDirections has no walking
         // graph for it. Mark the time as an estimate and let Maps retry from the
         // device's live position instead of surfacing raw MKError code 5.
-        return Array(preselected.prefix(6).map { candidate in
+        let fallback = routeCandidates.filter { unresolvedItems.contains(Self.destinationKey($0.item)) }.map { candidate in
             let item = candidate.item
             let coordinate = GeoCoordinate(
                 latitude: item.location.coordinate.latitude,
@@ -136,7 +167,7 @@ struct ExplorePlanner {
             )
             return ExploreRecommendation(
                 title: item.name ?? category.rawValue,
-                subtitle: "明确终点 · 路线将在 Apple 地图中再次确认",
+                subtitle: "仅为直线估算，实际通行时间待确认",
                 coordinate: coordinate,
                 estimatedMinutes: max(
                     1,
@@ -149,7 +180,42 @@ struct ExplorePlanner {
                 mapItem: item,
                 isRouteVerified: false
             )
-        })
+        }
+        return Self.diverseResults(fallback, excluding: excluding)
+    }
+
+    static func diverseResults(_ ranked: [ExploreRecommendation], excluding: Set<String>) -> [ExploreRecommendation] {
+        let fresh = ranked.filter { !excluding.contains($0.stableKey) }
+        let pool = fresh.isEmpty ? ranked : fresh
+        var selected = [ExploreRecommendation]()
+        for candidate in pool {
+            let baseName = candidate.title.components(separatedBy: CharacterSet(charactersIn: "(（")).first ?? candidate.title
+            guard !selected.contains(where: {
+                $0.coordinate.location.distance(from: candidate.coordinate.location) < 120
+                    || $0.title.components(separatedBy: CharacterSet(charactersIn: "(（")).first == baseName
+            }) else { continue }
+            selected.append(candidate)
+            if selected.count == 6 { return selected }
+        }
+        for candidate in pool where !selected.contains(where: { $0.stableKey == candidate.stableKey }) {
+            selected.append(candidate)
+            if selected.count == 6 { break }
+        }
+        return selected
+    }
+
+    private static func destinationKey(_ item: MKMapItem) -> String {
+        "\((item.name ?? "").lowercased())|\(Int((item.location.coordinate.latitude * 10_000).rounded()))|\(Int((item.location.coordinate.longitude * 10_000).rounded()))"
+    }
+
+    func previewRoute(start: GeoCoordinate, destination: MKMapItem, travelMode: ExploreTravelMode,
+                      explorationGrid: ExplorationGrid) async throws -> ExploreRecommendation {
+        let coordinate = GeoCoordinate(latitude: destination.location.coordinate.latitude,
+                                       longitude: destination.location.coordinate.longitude)
+        return try await routeRecommendation(start: start, mapItem: destination, requestedMinutes: 30,
+            travelMode: travelMode, explorationGrid: explorationGrid,
+            destinationNovelty: explorationGrid.noveltyRatio(around: coordinate), placePriority: 0,
+            enforceBudget: false).recommendation
     }
 
     private func searchMapItems(
@@ -158,12 +224,13 @@ struct ExplorePlanner {
     ) async throws -> [MKMapItem] {
         var items = [MKMapItem]()
         var receivedResponse = false
+        try Task.checkCancellation()
 
         let pointsRequest = MKLocalPointsOfInterestRequest(coordinateRegion: region)
         pointsRequest.pointOfInterestFilter = MKPointOfInterestFilter(
             including: category.pointOfInterestCategories
         )
-        if let response = try? await MKLocalSearch(request: pointsRequest).start() {
+        if let response = try? await runSearch(MKLocalSearch(request: pointsRequest)) {
             receivedResponse = true
             items.append(contentsOf: response.mapItems)
         }
@@ -172,16 +239,19 @@ struct ExplorePlanner {
         // return many nearby generic POIs while omitting familiar chains or
         // clearly named restaurants that are slightly farther into the fog.
         for query in category.searchQueries {
+            try Task.checkCancellation()
             let request = MKLocalSearch.Request(
                 naturalLanguageQuery: query,
                 region: region
             )
             request.resultTypes = .pointOfInterest
-            if let response = try? await MKLocalSearch(request: request).start() {
+            if let response = try? await runSearch(MKLocalSearch(request: request)) {
                 receivedResponse = true
                 items.append(contentsOf: response.mapItems)
             }
         }
+
+        try Task.checkCancellation()
 
         guard receivedResponse else { throw ExplorePlannerError.placeSearchUnavailable }
 
@@ -200,19 +270,30 @@ struct ExplorePlanner {
         travelMode: ExploreTravelMode,
         explorationGrid: ExplorationGrid,
         destinationNovelty: Double,
-        placePriority: Double
+        placePriority: Double,
+        enforceBudget: Bool = true
     ) async throws -> ScoredRecommendation {
         let request = MKDirections.Request()
         request.source = MKMapItem(location: start.location, address: nil)
         request.destination = mapItem
         request.transportType = travelMode.mapKitType
         request.requestsAlternateRoutes = true
-        let response = try await MKDirections(request: request).calculate()
+        let directions = MKDirections(request: request)
+        let cancellation = MapServiceCancellation()
+        cancellation.directions = directions
+        let response = try await withTaskCancellationHandler {
+            try await directions.calculate()
+        } onCancel: {
+            Task { @MainActor in cancellation.cancel() }
+        }
+        try Task.checkCancellation()
         guard !response.routes.isEmpty else {
             throw MKError(.directionsNotFound)
         }
 
-        let scoredRoutes = response.routes.map { route -> (MKRoute, [GeoCoordinate], Double, Double) in
+        let usableRoutes = response.routes.filter { !enforceBudget || Self.fitsBudget(seconds: $0.expectedTravelTime, minutes: requestedMinutes) }
+        guard !usableRoutes.isEmpty else { throw ExplorePlannerError.noRouteWithinBudget }
+        let scoredRoutes = usableRoutes.map { route -> (MKRoute, [GeoCoordinate], Double, Double) in
             var coordinates = Array(
                 repeating: CLLocationCoordinate2D(),
                 count: route.polyline.pointCount
@@ -255,7 +336,7 @@ struct ExplorePlanner {
         return ScoredRecommendation(
             recommendation: ExploreRecommendation(
                 title: mapItem.name ?? "探索目的地",
-                subtitle: "\(budgetNote) · 优先穿过未知区域",
+                subtitle: enforceBudget ? "\(budgetNote) · 优先穿过未知区域" : "路线预览 · 自选目的地",
                 coordinate: coordinate,
                 estimatedMinutes: etaMinutes,
                 distanceMeters: route.distance,
@@ -267,5 +348,15 @@ struct ExplorePlanner {
             ),
             score: best.3
         )
+    }
+
+    private func runSearch(_ search: MKLocalSearch) async throws -> MKLocalSearch.Response {
+        let cancellation = MapServiceCancellation()
+        cancellation.search = search
+        return try await withTaskCancellationHandler {
+            try await search.start()
+        } onCancel: {
+            Task { @MainActor in cancellation.cancel() }
+        }
     }
 }

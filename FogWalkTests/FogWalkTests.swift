@@ -209,6 +209,74 @@ final class FogWalkTests: XCTestCase {
         )
     }
 
+    func testStaleSearchGenerationCannotPublishAfterCancelOrOptionChange() {
+        var generation = SearchGeneration()
+        let first = generation.advance()
+        XCTAssertTrue(generation.accepts(first))
+        let second = generation.advance()
+        XCTAssertFalse(generation.accepts(first))
+        XCTAssertTrue(generation.accepts(second))
+    }
+
+    func testUnverifiedRouteNeverClaimsZeroPercentOrRoadDistance() {
+        let result = recommendation("测试终点", longitude: 121.47, verified: false)
+        XCTAssertEqual(result.noveltyText, "路线待确认")
+        XCTAssertTrue(result.timeText.hasPrefix("估算约"))
+        XCTAssertTrue(result.distanceText.hasPrefix("直线"))
+        XCTAssertFalse(result.noveltyText.contains("0%"))
+    }
+
+    @MainActor
+    func testBudgetUsesActualSecondsAndDoesNotRoundOvertimeDown() {
+        XCTAssertTrue(ExplorePlanner.fitsBudget(seconds: 1_800, minutes: 30))
+        XCTAssertFalse(ExplorePlanner.fitsBudget(seconds: 1_801, minutes: 30))
+        XCTAssertFalse(ExplorePlanner.fitsBudget(seconds: .infinity, minutes: 30))
+        XCTAssertFalse(ExplorePlanner.fitsBudget(seconds: -1, minutes: 30))
+    }
+
+    @MainActor
+    func testChangedOptionsInvalidateResultsAndPersistWithoutLocations() throws {
+        let suite = "FogWalkTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = AppModel(preferences: defaults)
+        let old = recommendation("旧地点", longitude: 121.47)
+        model.recommendations = [old]
+        model.selectedRecommendationID = old.id
+        model.exploreOptions.minutes = 45
+        model.exploreOptions.category = .tea
+        XCTAssertTrue(model.recommendations.isEmpty)
+        XCTAssertNil(model.selectedRecommendationID)
+        XCTAssertFalse(model.isGeneratingRecommendations)
+        let restored = AppModel(preferences: defaults)
+        XCTAssertEqual(restored.exploreOptions.minutes, 45)
+        XCTAssertEqual(restored.exploreOptions.category, .tea)
+        XCTAssertTrue(restored.recommendations.isEmpty)
+    }
+
+    @MainActor
+    func testNewBatchExcludesSeenPlacesAndPrioritizesDifferentNames() {
+        let first = recommendation("同品牌（甲店）", longitude: 121.47)
+        let sameBrand = recommendation("同品牌（乙店）", longitude: 121.48)
+        let other = recommendation("独立咖啡", longitude: 121.50)
+        let result = ExplorePlanner.diverseResults([first, sameBrand, other], excluding: [])
+        XCTAssertEqual(result.map(\.title), [first.title, other.title, sameBrand.title])
+        let newBatch = ExplorePlanner.diverseResults([first, sameBrand, other], excluding: [first.stableKey])
+        XCTAssertFalse(newBatch.contains(where: { $0.stableKey == first.stableKey }))
+    }
+
+    func testCoffeeAndTeaAreDistinctAndIndependentCafeNotPenalized() {
+        XCTAssertFalse(ExploreCategory.cafe.searchQueries.contains("蜜雪冰城"))
+        XCTAssertTrue(ExploreCategory.tea.searchQueries.contains("蜜雪冰城"))
+        XCTAssertEqual(ExploreCategory.cafe.placePriority(name: "小巷咖啡"), ExploreCategory.cafe.placePriority(name: "瑞幸咖啡"))
+    }
+
+    private func recommendation(_ title: String, longitude: Double, verified: Bool = true) -> ExploreRecommendation {
+        ExploreRecommendation(title: title, subtitle: "测试", coordinate: GeoCoordinate(latitude: 31.23, longitude: longitude),
+            estimatedMinutes: 20, distanceMeters: 1_000, routeCoordinates: [], routeNoveltyRatio: 0,
+            destinationNoveltyRatio: 1, mapItem: nil, isRouteVerified: verified)
+    }
+
     private func loadFullDataset() throws -> TrackDataset {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

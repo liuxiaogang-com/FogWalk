@@ -12,6 +12,11 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     override init() {
         authorizationStatus = manager.authorizationStatus
         super.init()
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
+            currentCoordinate = GeoCoordinate(latitude: 31.2304, longitude: 121.4737)
+        }
+        #endif
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = 25
@@ -20,6 +25,9 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     }
 
     func requestCurrentLocation() {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") { return }
+        #endif
         switch authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()

@@ -15,9 +15,12 @@ struct FogMapView: UIViewRepresentable {
     var liveCurrentCoordinate: GeoCoordinate?
     var centersOnCurrentCoordinate = false
     var initialSpanMeters: CLLocationDistance = 4_000
+    var showsBasePOIs = true
     var recenterCoordinate: GeoCoordinate?
     var recenterRequestID = 0
     var recenterSpanMeters: CLLocationDistance = 3_000
+    var trackPresentation: TrackPresentation?
+    var overviewRequestID = 0
     var highlightedRoute: [GeoCoordinate] = []
     var destinationCoordinate: GeoCoordinate?
     var destinationMarkers: [ExploreMapDestination] = []
@@ -36,13 +39,16 @@ struct FogMapView: UIViewRepresentable {
         mapView.showsCompass = false
         mapView.showsScale = true
         mapView.showsUserLocation = true
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--ui-fixture") { mapView.showsUserLocation = false }
+        #endif
         mapView.isPitchEnabled = false
         // A dark base map keeps the revealed corridor legible without the
         // harsh white "light tube" effect produced by cutting a light map out
         // of a nearly black overlay.
         mapView.overrideUserInterfaceStyle = .dark
         let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
-        configuration.pointOfInterestFilter = .includingAll
+        configuration.pointOfInterestFilter = showsBasePOIs ? .includingAll : .excludingAll
         mapView.preferredConfiguration = configuration
         let longPress = UILongPressGestureRecognizer(
             target: context.coordinator,
@@ -53,9 +59,10 @@ struct FogMapView: UIViewRepresentable {
         mapView.addGestureRecognizer(longPress)
         mapView.setRegion(
             MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 35, longitude: 105),
-                latitudinalMeters: 4_500_000,
-                longitudinalMeters: 4_500_000
+                center: (liveCurrentCoordinate ?? currentCoordinate ?? presentation.latestCoordinate)?.clCoordinate
+                    ?? CLLocationCoordinate2D(latitude: 35, longitude: 105),
+                latitudinalMeters: initialSpanMeters,
+                longitudinalMeters: initialSpanMeters
             ),
             animated: false
         )
@@ -71,19 +78,22 @@ struct FogMapView: UIViewRepresentable {
            let recenterCoordinate {
             context.coordinator.lastRecenterRequestID = recenterRequestID
             context.coordinator.hasPositionedMap = true
+            let distance = CLLocation(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
+                .distance(from: recenterCoordinate.location)
             mapView.setRegion(
                 MKCoordinateRegion(
                     center: recenterCoordinate.clCoordinate,
                     latitudinalMeters: recenterSpanMeters,
                     longitudinalMeters: recenterSpanMeters
                 ),
-                animated: true
+                animated: distance < 10_000 && mapView.region.span.latitudeDelta < 0.2
             )
         }
 
         if centersOnCurrentCoordinate,
            let liveCurrentCoordinate,
-           !context.coordinator.hasAppliedLiveCenter {
+           !context.coordinator.hasAppliedLiveCenter,
+           !context.coordinator.hasUserMovedMap {
             context.coordinator.hasAppliedLiveCenter = true
             context.coordinator.hasPositionedMap = true
             mapView.setRegion(
@@ -97,6 +107,7 @@ struct FogMapView: UIViewRepresentable {
         }
         let state = OverlayState(
             revision: presentation.revision,
+            trackRevision: trackPresentation?.revision ?? presentation.revision,
             fog: isFogVisible,
             track: isTrackVisible,
             route: highlightedRoute,
@@ -104,22 +115,25 @@ struct FogMapView: UIViewRepresentable {
             destinationMarkers: destinationMarkers,
             selectedDestinationID: selectedDestinationID
         )
+        let previousState = context.coordinator.overlayState
         if context.coordinator.overlayState != state {
-            if !context.coordinator.overlays.isEmpty {
-                mapView.removeOverlays(context.coordinator.overlays)
-            }
+            let baseChanged = previousState?.revision != state.revision
+                || previousState?.trackRevision != state.trackRevision
+                || previousState?.fog != state.fog || previousState?.track != state.track
+            let removed = context.coordinator.overlays.filter { baseChanged || $0 is MKPolyline }
+            mapView.removeOverlays(removed)
             if !context.coordinator.annotations.isEmpty {
                 mapView.removeAnnotations(context.coordinator.annotations)
             }
-            var overlays = [MKOverlay]()
-            if isFogVisible {
+            var overlays: [MKOverlay] = baseChanged ? [] : context.coordinator.overlays.filter { $0 is ExplorationOverlay }
+            if baseChanged && isFogVisible {
                 overlays.append(
                     ExplorationOverlay(presentation: presentation, showFog: true, showTrack: false)
                 )
             }
-            if isTrackVisible {
+            if baseChanged && isTrackVisible {
                 overlays.append(
-                    ExplorationOverlay(presentation: presentation, showFog: false, showTrack: true)
+                    ExplorationOverlay(presentation: trackPresentation ?? presentation, showFog: false, showTrack: true)
                 )
             }
             if highlightedRoute.count >= 2 {
@@ -128,10 +142,10 @@ struct FogMapView: UIViewRepresentable {
             }
             context.coordinator.overlays = overlays
             context.coordinator.overlayState = state
-            if let fogOverlay = overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showFog }) {
+            if baseChanged, let fogOverlay = overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showFog }) {
                 mapView.addOverlay(fogOverlay, level: .aboveLabels)
             }
-            if let trackOverlay = overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showTrack }) {
+            if baseChanged, let trackOverlay = overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showTrack }) {
                 if let fogOverlay = overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showFog }) {
                     mapView.insertOverlay(trackOverlay, above: fogOverlay)
                 } else {
@@ -160,31 +174,29 @@ struct FogMapView: UIViewRepresentable {
                 context.coordinator.annotations = []
             }
 
-            if let routeOverlay = overlays.first(where: { $0 is MKPolyline }) {
+        }
+
+        let newResultSet = !destinationMarkers.isEmpty
+            && previousState?.destinationMarkers.map(\.id) != destinationMarkers.map(\.id)
+        let explicitOverview = context.coordinator.lastOverviewRequestID != overviewRequestID
+        if explicitOverview || (newResultSet && !context.coordinator.hasUserMovedMap) {
+            context.coordinator.lastOverviewRequestID = overviewRequestID
+            let coordinates = destinationMarkers.map(\.coordinate) + highlightedRoute
+                + [destinationCoordinate, currentCoordinate].compactMap { $0 }
+            var rect = MKMapRect.null
+            for coordinate in coordinates {
+                let point = MKMapPoint(coordinate.clCoordinate)
+                let size = MKMapPointsPerMeterAtLatitude(coordinate.latitude) * 100
+                rect = rect.union(MKMapRect(x: point.x - size, y: point.y - size, width: size * 2, height: size * 2))
+            }
+            if destinationMarkers.isEmpty, highlightedRoute.isEmpty, destinationCoordinate == nil,
+               let track = context.coordinator.overlays.compactMap({ $0 as? ExplorationOverlay }).first(where: { $0.showTrack }),
+               !track.contentMapRect.isNull, !track.contentMapRect.isEmpty {
+                rect = track.contentMapRect
+            }
+            if !rect.isNull {
                 context.coordinator.hasPositionedMap = true
-                let markerRect = destinationMarkers.reduce(MKMapRect.null) { partial, destination in
-                    let point = MKMapPoint(destination.coordinate.clCoordinate)
-                    let pointRect = MKMapRect(x: point.x, y: point.y, width: 1, height: 1)
-                    return partial.isNull ? pointRect : partial.union(pointRect)
-                }
-                let visibleRect = markerRect.isNull
-                    ? routeOverlay.boundingMapRect
-                    : routeOverlay.boundingMapRect.union(markerRect)
-                mapView.setVisibleMapRect(
-                    visibleRect,
-                    edgePadding: UIEdgeInsets(top: 120, left: 38, bottom: 310, right: 38),
-                    animated: true
-                )
-            } else if let destinationCoordinate {
-                context.coordinator.hasPositionedMap = true
-                mapView.setRegion(
-                    MKCoordinateRegion(
-                        center: destinationCoordinate.clCoordinate,
-                        latitudinalMeters: 3_500,
-                        longitudinalMeters: 3_500
-                    ),
-                    animated: true
-                )
+                mapView.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 230, left: 40, bottom: 330, right: 40), animated: true)
             }
         }
 
@@ -228,9 +240,19 @@ struct FogMapView: UIViewRepresentable {
         var hasPositionedMap = false
         var hasAppliedLiveCenter = false
         var lastRecenterRequestID = 0
+        var lastOverviewRequestID = 0
+        var hasUserMovedMap = false
         var isLongPressSelectionEnabled = false
         var onLongPressSelection: ((GeoCoordinate) -> Void)?
         var onDestinationSelection: ((UUID) -> Void)?
+
+        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            func isInteracting(_ view: UIView) -> Bool {
+                if view.gestureRecognizers?.contains(where: { $0.state == .began || $0.state == .changed }) == true { return true }
+                return view.subviews.contains(where: isInteracting)
+            }
+            if isInteracting(mapView) { hasUserMovedMap = true }
+        }
 
         @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
             guard gesture.state == .began,
@@ -286,6 +308,7 @@ struct FogMapView: UIViewRepresentable {
 
 fileprivate struct OverlayState: Equatable {
     let revision: Int
+    let trackRevision: Int
     let fog: Bool
     let track: Bool
     let route: [GeoCoordinate]

@@ -1,476 +1,419 @@
 import SwiftUI
 import MapKit
 
-/// Kept under the original filename to avoid unnecessary project-file churn;
-/// this is now a full-screen map experience, not a bottom sheet.
 struct ExploreSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var minutes = 30
-    @State private var travelMode: ExploreTravelMode = .walking
-    @State private var category: ExploreCategory = .any
-    @State private var selectedRecommendationID: UUID?
     @State private var isManualSelectionMode = ProcessInfo.processInfo.arguments.contains("--manual-select")
     @State private var manualCoordinate: GeoCoordinate?
     @State private var manualMapItem: MKMapItem?
-    @State private var isResolvingManualAddress = false
-
-    private let minuteOptions = [15, 30, 45, 60, 90]
+    @State private var manualRoute: ExploreRecommendation?
+    @State private var manualTask: Task<Void, Never>?
+    @State private var manualError: String?
+    @State private var isResolving = false
+    @State private var isPlanning = false
+    @State private var detail: ExploreRecommendation?
+    @State private var overviewRequestID = 0
+    @State private var recenterRequestID = 0
+    @ScaledMetric(relativeTo: .body) private var cardHeight = 214.0
 
     private var selectedRecommendation: ExploreRecommendation? {
-        model.recommendations.first { $0.id == selectedRecommendationID }
-            ?? model.recommendations.first
+        model.recommendations.first { $0.id == model.selectedRecommendationID } ?? model.recommendations.first
     }
 
-    private var displayedDestination: GeoCoordinate? {
-        isManualSelectionMode ? manualCoordinate : selectedRecommendation?.coordinate
+    private var displayedRoute: ExploreRecommendation? {
+        isManualSelectionMode ? manualRoute : selectedRecommendation
     }
 
     private var mapDestinations: [ExploreMapDestination] {
         guard !isManualSelectionMode else { return [] }
-        return model.recommendations.enumerated().map { index, recommendation in
-            ExploreMapDestination(
-                id: recommendation.id,
-                coordinate: recommendation.coordinate,
-                rank: index + 1
-            )
+        return model.recommendations.enumerated().map {
+            ExploreMapDestination(id: $0.element.id, coordinate: $0.element.coordinate, rank: $0.offset + 1)
         }
     }
 
     var body: some View {
         ZStack {
             FogMapView(
-                presentation: model.explorationPresentation,
-                isFogVisible: true,
-                isTrackVisible: false,
-                currentCoordinate: model.activeCoordinate,
-                liveCurrentCoordinate: model.locationManager.currentCoordinate.map {
-                    ChinaCoordinateTransform.mapCoordinate(for: $0)
+                presentation: model.explorationPresentation, isFogVisible: true, isTrackVisible: false,
+                currentCoordinate: model.activeCoordinate, liveCurrentCoordinate: model.liveMapCoordinate,
+                centersOnCurrentCoordinate: true, initialSpanMeters: 3_000, showsBasePOIs: false,
+                recenterCoordinate: model.liveMapCoordinate, recenterRequestID: recenterRequestID,
+                overviewRequestID: overviewRequestID,
+                highlightedRoute: displayedRoute?.routeCoordinates ?? [],
+                destinationCoordinate: isManualSelectionMode ? manualCoordinate : selectedRecommendation?.coordinate,
+                destinationMarkers: mapDestinations, selectedDestinationID: model.selectedRecommendationID,
+                onDestinationSelection: { id in
+                    withAnimation(.snappy) { model.selectedRecommendationID = id }
                 },
-                centersOnCurrentCoordinate: true,
-                initialSpanMeters: 3_000,
-                highlightedRoute: isManualSelectionMode ? [] : selectedRecommendation?.routeCoordinates ?? [],
-                destinationCoordinate: displayedDestination,
-                destinationMarkers: mapDestinations,
-                selectedDestinationID: selectedRecommendationID,
-                onDestinationSelection: { selectedRecommendationID = $0 },
                 isLongPressSelectionEnabled: isManualSelectionMode,
-                onLongPressSelection: { selectManualDestination($0) }
+                onLongPressSelection: selectManualDestination
             )
             .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                exploreHeader
-                if !isManualSelectionMode {
-                    conditionBar
+                header
+                if !isManualSelectionMode { conditionBar }
+                if model.liveMapCoordinate == nil {
+                    Text(model.hasData ? "以最近足迹为起点 · 获取定位后可重试" : "等待当前位置 · 没有历史足迹也能开始")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(8).background(.regularMaterial, in: Capsule())
                 }
-                Spacer()
+                Spacer(minLength: 8)
+                mapTools
                 if isManualSelectionMode {
-                    manualSelectionPanel
-                } else if model.recommendations.isEmpty {
-                    searchPrompt
+                    manualPanel
                 } else {
-                    recommendationCarousel
+                    if model.isGeneratingRecommendations || model.exploreErrorMessage != nil || model.exploreBatchNotice != nil {
+                        searchStatus
+                    }
+                    if model.recommendations.isEmpty {
+                        if !model.isGeneratingRecommendations && model.exploreErrorMessage == nil { emptyPrompt }
+                    } else {
+                        carousel
+                        Button { model.searchDestinations(changeBatch: true) } label: {
+                            Label("换一批目的地", systemImage: "arrow.clockwise")
+                                .font(.caption.weight(.medium)).frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain).disabled(model.isGeneratingRecommendations)
+                        .frame(maxWidth: .infinity).background(.regularMaterial, in: Capsule())
+                    }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
         }
         .preferredColorScheme(.dark)
+        .sheet(item: $detail) { destinationDetail($0) }
         .onAppear {
             model.locationManager.requestCurrentLocation()
-            selectedRecommendationID = model.recommendations.first?.id
+            if model.selectedRecommendationID == nil { model.selectedRecommendationID = model.recommendations.first?.id }
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--fixture-detail") { detail = selectedRecommendation }
+            if ProcessInfo.processInfo.arguments.contains("--fixture-manual"), let sample = selectedRecommendation {
+                isManualSelectionMode = true
+                manualCoordinate = sample.coordinate
+                manualMapItem = sample.mapItem
+                manualRoute = sample
+            }
+            #endif
         }
-        .onChange(of: model.recommendations.map(\.id)) { _, ids in
-            selectedRecommendationID = ids.first
-        }
+        .onDisappear { manualTask?.cancel(); model.cancelSearch() }
     }
 
-    private var exploreHeader: some View {
+    private var header: some View {
         HStack(spacing: 10) {
             Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.body.bold())
-                    .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
+                Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 44, height: 44)
             }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("探索未知")
-                    .font(.headline)
-                Text(headerSubtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 42)
-            .background(.ultraThinMaterial, in: Capsule())
+            .accessibilityLabel("返回地图")
+            Text(isManualSelectionMode ? "地图选点" : "探索附近").font(.headline)
             Spacer()
-
             Button { toggleManualSelection() } label: {
-                Label(isManualSelectionMode ? "取消" : "选点", systemImage: "hand.tap")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 11)
-                    .frame(height: 38)
-                    .foregroundStyle(isManualSelectionMode ? .orange : .primary)
-                    .background(.ultraThinMaterial, in: Capsule())
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var headerSubtitle: String {
-        if isManualSelectionMode {
-            return manualCoordinate == nil ? "长按地图选择一个目的地" : "已标记自选目的地"
-        }
-        return selectedRecommendation == nil ? "终点只会选在未探索区域" : "路线与终点已显示在迷雾地图"
-    }
-
-    private var manualSelectionPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("地图选点", systemImage: "hand.tap.fill")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.orange)
-                Spacer()
-                if let manualCoordinate {
-                    explorationStatus(for: manualCoordinate)
-                }
-            }
-
-            if let manualCoordinate {
-                Text(manualMapItem?.name ?? "自选目的地")
-                    .font(.title3.bold())
-                HStack(alignment: .top, spacing: 7) {
-                    if isResolvingManualAddress {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "mappin")
-                    }
-                    Text(manualAddressText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                HStack(spacing: 14) {
-                    if let start = model.activeCoordinate {
-                        Label(distanceText(from: start, to: manualCoordinate), systemImage: "ruler")
-                    }
-                    Label("长按其他位置可重新选择", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-                Button { openManualDestinationInMaps() } label: {
-                    Label("开始导航", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.orange)
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "hand.draw.fill")
-                        .font(.title)
-                        .foregroundStyle(.orange)
-                    Text("在地图任意区域长按约半秒")
-                        .font(.headline)
-                    Text("选中后会显示地址和探索状态，再由你决定是否导航。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+                Label(isManualSelectionMode ? "完成选点" : "选点", systemImage: "hand.tap")
+                    .font(.subheadline).frame(minHeight: 44)
             }
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .buttonStyle(.plain).padding(.trailing, 14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private var conditionBar: some View {
-        HStack(spacing: 6) {
-            Menu {
-                ForEach(minuteOptions, id: \.self) { value in
-                    Button("\(value) 分钟") { changeOptions { minutes = value } }
-                }
-            } label: {
-                compactOption("\(minutes) 分", icon: "clock")
-            }
-
-            Menu {
-                ForEach(ExploreTravelMode.allCases) { item in
-                    Button(item.rawValue) { changeOptions { travelMode = item } }
-                }
-            } label: {
-                compactOption(travelMode.rawValue, icon: travelMode.systemImage)
-            }
-
-            Menu {
-                ForEach(ExploreCategory.allCases) { item in
-                    Button(item.rawValue) { changeOptions { category = item } }
-                }
-            } label: {
-                compactOption(category.rawValue, icon: category.symbol)
-            }
-
-            Button { generate() } label: {
-                Group {
-                    if model.isGeneratingRecommendations {
-                        ProgressView().tint(.white).controlSize(.small)
-                    } else {
-                        Image(systemName: "magnifyingglass")
-                            .font(.caption.bold())
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Menu {
+                    ForEach([15, 30, 45, 60, 90], id: \.self) { value in
+                        Button("\(value) 分钟以内") { model.exploreOptions.minutes = value }
                     }
+                } label: { conditionLabel("\(model.exploreOptions.minutes) 分", icon: "clock") }
+                Divider().frame(height: 18)
+                Menu {
+                    ForEach(ExploreTravelMode.allCases) { mode in
+                        Button(mode.rawValue) { model.exploreOptions.travelMode = mode }
+                    }
+                } label: { conditionLabel(model.exploreOptions.travelMode.rawValue, icon: model.exploreOptions.travelMode.systemImage) }
+                Divider().frame(height: 18)
+                Menu {
+                    ForEach(ExploreCategory.allCases) { category in
+                        Button(category.rawValue) { model.exploreOptions.category = category }
+                    }
+                } label: { conditionLabel(model.exploreOptions.category.rawValue, icon: nil) }
+                Button { model.searchDestinations() } label: {
+                    Image(systemName: "magnifyingglass").font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44).foregroundStyle(.white)
+                        .background(.orange, in: RoundedRectangle(cornerRadius: 12))
                 }
-                .frame(width: 38, height: 38)
-                .foregroundStyle(.white)
-                .background(.orange.gradient, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .buttonStyle(.plain).disabled(model.isGeneratingRecommendations)
+                .accessibilityLabel("搜索未知目的地")
             }
-            .buttonStyle(.plain)
-            .disabled(model.isGeneratingRecommendations)
-            .accessibilityLabel("搜索未知目的地")
+            Text("单程时间预算 · 只推荐未探索终点")
+                .font(.caption2).foregroundStyle(.secondary)
+                .padding(.leading, 6).padding(.top, 4).padding(.bottom, 3)
         }
-        .padding(6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    private var searchPrompt: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("发现未走过的目的地")
-                        .font(.headline)
-                    Text("结果会同时标在地图上，也可以左右滑动切换")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "mappin.and.ellipse")
-                    .foregroundStyle(.orange)
-            }
+    private func conditionLabel(_ title: String, icon: String?) -> some View {
+        HStack(spacing: 4) {
+            if let icon { Image(systemName: icon) }
+            Text(title).lineLimit(1).minimumScaleFactor(0.85)
+            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+        }
+        .font(.caption.weight(.medium)).foregroundStyle(.primary)
+        .frame(maxWidth: .infinity, minHeight: 44)
+    }
 
-            Button { generate() } label: {
+    private var mapTools: some View {
+        HStack {
+            Spacer()
+            if displayedRoute != nil || !mapDestinations.isEmpty {
+                Button { overviewRequestID &+= 1 } label: {
+                    Label("总览", systemImage: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.weight(.medium)).padding(.horizontal, 12).frame(height: 44)
+                }
+                .buttonStyle(.plain).background(.regularMaterial, in: Capsule())
+            }
+            Button {
+                model.locationManager.requestCurrentLocation()
+                recenterRequestID &+= 1
+            } label: {
+                Image(systemName: "location.fill").frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain).background(.regularMaterial, in: Circle())
+            .accessibilityLabel("回到当前位置")
+        }
+    }
+
+    private var emptyPrompt: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("下一站，去没走过的地方").font(.headline)
+            Text("在上方选择时间和类型，点击搜索。地点会显示在地图上。")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    private var searchStatus: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.isGeneratingRecommendations {
                 HStack {
-                    if model.isGeneratingRecommendations {
-                        ProgressView().tint(.white)
-                    } else {
-                        Image(systemName: "wand.and.stars")
-                    }
-                    Text("搜索未知目的地")
-                        .fontWeight(.bold)
+                    ProgressView().tint(.orange)
+                    Text("正在寻找可到达的未知地点…").font(.subheadline)
                     Spacer()
-                    Image(systemName: "arrow.right")
-                        .font(.caption.bold())
+                    Button("取消") { model.cancelSearch() }.frame(minHeight: 44)
                 }
-                .padding(.horizontal, 16)
-                .frame(height: 48)
-                .foregroundStyle(.white)
-                .background(.orange.gradient, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(model.isGeneratingRecommendations)
-
-            if let message = model.exploreErrorMessage {
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } else if let error = model.exploreErrorMessage {
+                Label(error, systemImage: "exclamationmark.circle").font(.subheadline)
+                HStack {
+                    Button("重试") { model.searchDestinations() }.frame(minHeight: 44)
+                    if model.locationManager.authorizationStatus == .denied || model.locationManager.authorizationStatus == .restricted {
+                        Button("位置设置") { openLocationSettings() }.frame(minHeight: 44)
+                    } else {
+                        Button("增加时间") {
+                            model.exploreOptions.minutes = min(90, model.exploreOptions.minutes + 15)
+                            model.searchDestinations()
+                        }
+                        .frame(minHeight: 44).disabled(model.exploreOptions.minutes >= 90)
+                    }
+                }
+                .buttonStyle(.bordered).tint(.orange)
+            } else if let notice = model.exploreBatchNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    private var recommendationCarousel: some View {
+    private var carousel: some View {
         ScrollView(.horizontal) {
-            LazyHStack(spacing: 10) {
+            LazyHStack(spacing: 12) {
                 ForEach(model.recommendations) { recommendation in
                     recommendationCard(recommendation)
-                        .containerRelativeFrame(.horizontal, count: 5, span: 4, spacing: 10)
+                        .containerRelativeFrame(.horizontal, count: 5, span: 4, spacing: 12)
                         .id(recommendation.id)
-                        .onTapGesture {
-                            withAnimation(.snappy) {
-                                selectedRecommendationID = recommendation.id
-                            }
-                        }
+                        .onTapGesture { withAnimation(.snappy) { model.selectedRecommendationID = recommendation.id } }
                 }
             }
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
         .scrollTargetBehavior(.viewAligned(limitBehavior: .always))
-        .scrollPosition(id: $selectedRecommendationID)
-        .frame(height: 196)
+        .scrollPosition(id: $model.selectedRecommendationID, anchor: .leading)
+        .frame(height: cardHeight)
     }
 
     private func recommendationCard(_ recommendation: ExploreRecommendation) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("未探索目的地", systemImage: "sparkles")
-                    .font(.caption.bold())
-                    .foregroundStyle(.orange)
-                Spacer()
-                if recommendation.id == selectedRecommendationID {
-                    Image(systemName: "mappin.circle.fill")
-                        .foregroundStyle(.orange)
-                }
+            Text(recommendation.title).font(.headline).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(recommendation.addressText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 12) {
+                Label(recommendation.timeText, systemImage: "clock")
+                Text(recommendation.distanceText)
             }
-
-            Text(recommendation.title)
-                .font(.title3.bold())
-                .lineLimit(1)
-            Text(recommendation.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            HStack(spacing: 7) {
-                recommendationMetric("\(recommendation.estimatedMinutes) 分", icon: "clock")
-                recommendationMetric(distanceText(for: recommendation), icon: travelMode.systemImage)
-                recommendationMetric(
-                    "未知 \(Int((recommendation.routeNoveltyRatio * 100).rounded()))%",
-                    icon: "cloud.fog.fill"
-                )
-            }
-
-            Button { openRecommendationInMaps(recommendation) } label: {
-                Label("开始导航", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                    .fontWeight(.semibold)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-        }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    private func compactOption(_ title: String, icon: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon)
-            Text(title).lineLimit(1)
+            .font(.caption).foregroundStyle(.secondary)
+            Label(recommendation.noveltyText, systemImage: recommendation.isRouteVerified ? "sparkles" : "exclamationmark.circle")
+                .font(.caption).foregroundStyle(recommendation.isRouteVerified ? Color.cyan : .secondary)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.secondary)
+            Button {
+                model.selectedRecommendationID = recommendation.id
+                detail = recommendation
+            } label: {
+                HStack { Text("去这里"); Spacer(); Image(systemName: "arrow.right") }
+                    .font(.subheadline.weight(.semibold)).padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .foregroundStyle(.white).background(.orange, in: RoundedRectangle(cornerRadius: 13))
+            }
+            .buttonStyle(.plain)
         }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity)
-        .frame(height: 38)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-    }
-
-    private func recommendationMetric(_ text: String, icon: String) -> some View {
-        Label(text, systemImage: icon)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(Color.white.opacity(0.055), in: Capsule())
-    }
-
-    private func changeOptions(_ change: () -> Void) {
-        change()
-        model.clearRecommendations()
-        selectedRecommendationID = nil
-    }
-
-    private func generate() {
-        model.generateRecommendations(
-            mode: .destination,
-            minutes: minutes,
-            travelMode: travelMode,
-            category: category
-        )
-    }
-
-    private func distanceText(for recommendation: ExploreRecommendation) -> String {
-        recommendation.distanceMeters >= 1_000
-            ? String(format: "%.1f 公里", recommendation.distanceMeters / 1_000)
-            : "\(Int(recommendation.distanceMeters.rounded())) 米"
-    }
-
-    private func openRecommendationInMaps(_ recommendation: ExploreRecommendation) {
-        let item = recommendation.mapItem ?? MKMapItem(
-            location: recommendation.coordinate.location,
-            address: nil
-        )
-        let mode: String
-        switch travelMode {
-        case .walking: mode = MKLaunchOptionsDirectionsModeWalking
-        case .cycling: mode = MKLaunchOptionsDirectionsModeCycling
-        case .automobile: mode = MKLaunchOptionsDirectionsModeDriving
+        .padding(16).frame(height: cardHeight - 4)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(recommendation.id == model.selectedRecommendationID ? Color.orange.opacity(0.6) : .clear, lineWidth: 1)
         }
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: mode])
+    }
+
+    private var manualPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let coordinate = manualCoordinate {
+                HStack {
+                    Text(manualMapItem?.name ?? "自选位置").font(.headline).lineLimit(2)
+                    Spacer()
+                    Text(model.explorationGrid?.isExplored(coordinate) == true ? "已探索" : "未探索")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(isResolving ? "正在识别地址…" : (manualMapItem?.address?.shortAddress ?? "已标记地图位置"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let route = manualRoute {
+                    Text("\(route.timeText) · \(route.distanceText)").font(.subheadline)
+                    Text(route.noveltyText).font(.caption).foregroundStyle(.cyan)
+                }
+                if let manualError { Text(manualError).font(.caption).foregroundStyle(.secondary) }
+                Button {
+                    if let manualRoute { detail = manualRoute } else { planManualRoute() }
+                } label: {
+                    HStack {
+                        if isPlanning { ProgressView().tint(.white) }
+                        Text(isPlanning ? "正在规划路线…" : manualRoute == nil ? "在地图预览路线" : "查看目的地详情")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent).tint(.orange).disabled(isPlanning || isResolving)
+            } else {
+                Label("长按地图，选择一个目的地", systemImage: "hand.tap").font(.headline)
+                Text("先在迷雾地图预览路线，再决定是否出发。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    private func destinationDetail(_ recommendation: ExploreRecommendation) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Text(recommendation.title).font(.title2.bold())
+                    Label(recommendation.addressText, systemImage: "mappin")
+                        .foregroundStyle(.secondary)
+                    HStack { Text(recommendation.timeText); Spacer(); Text(recommendation.distanceText) }
+                        .font(.headline)
+                    Label(recommendation.noveltyText, systemImage: "map")
+                    Text(recommendation.isRouteVerified
+                         ? "路线已经显示在本 App 的迷雾地图中。关闭详情后可继续查看。"
+                         : "尚未取得可通行路线。时间和距离仅为直线估算，不保证在预算内可达。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Button {
+                        detail = nil
+                        overviewRequestID &+= 1
+                    } label: {
+                        Label("回到地图查看", systemImage: "map").frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.orange)
+                    Button { openInMaps(recommendation) } label: {
+                        Label("在 Apple 地图导航", systemImage: "arrow.up.forward.app")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    Text("外部导航会打开 Apple 地图。本版本尚未提供 App 内逐向导航与持续足迹保存。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(24)
+            }
+            .navigationTitle("目的地").navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("完成") { detail = nil } }
+        }
+        .presentationDetents([.medium, .large])
     }
 
     private func toggleManualSelection() {
+        manualTask?.cancel()
+        model.cancelSearch()
         isManualSelectionMode.toggle()
-        if !isManualSelectionMode {
-            manualCoordinate = nil
-            manualMapItem = nil
-            isResolvingManualAddress = false
-        }
+        manualCoordinate = nil
+        manualMapItem = nil
+        manualRoute = nil
+        manualError = nil
+        isResolving = false
+        isPlanning = false
     }
 
     private func selectManualDestination(_ coordinate: GeoCoordinate) {
+        manualTask?.cancel()
         manualCoordinate = coordinate
         manualMapItem = nil
-        isResolvingManualAddress = true
-        Task {
+        manualRoute = nil
+        manualError = nil
+        isPlanning = false
+        isResolving = true
+        manualTask = Task {
             let request = MKReverseGeocodingRequest(location: coordinate.location)
+            let resolved = try? await request?.mapItems.first
+            guard !Task.isCancelled, isManualSelectionMode, manualCoordinate == coordinate else { return }
+            manualMapItem = resolved
+            isResolving = false
+        }
+    }
+
+    private func planManualRoute() {
+        guard let coordinate = manualCoordinate, let start = model.activeCoordinate else {
+            manualError = "尚未获得起点位置，请先定位。"; return
+        }
+        manualTask?.cancel()
+        isPlanning = true
+        manualError = nil
+        let destination = manualMapItem ?? MKMapItem(location: coordinate.location, address: nil)
+        if destination.name == nil { destination.name = "自选目的地" }
+        manualTask = Task {
             do {
-                let resolvedItem = try await request?.mapItems.first
-                guard manualCoordinate == coordinate else { return }
-                manualMapItem = resolvedItem
+                let route = try await ExplorePlanner().previewRoute(start: start, destination: destination,
+                    travelMode: model.exploreOptions.travelMode,
+                    explorationGrid: model.explorationGrid ?? ExplorationGrid(coordinates: []))
+                guard !Task.isCancelled, isManualSelectionMode, manualCoordinate == coordinate else { return }
+                manualRoute = route
+                overviewRequestID &+= 1
             } catch {
-                guard manualCoordinate == coordinate else { return }
-                manualMapItem = nil
+                guard !Task.isCancelled, manualCoordinate == coordinate else { return }
+                manualError = "暂时无法取得这条路线，请重试或重新选点。不会用直线代替道路。"
             }
-            isResolvingManualAddress = false
+            isPlanning = false
         }
     }
 
-    private var manualAddressText: String {
-        if isResolvingManualAddress { return "正在识别地址…" }
-        if let address = manualMapItem?.address {
-            return address.shortAddress ?? address.fullAddress
-        }
-        guard let coordinate = manualCoordinate else { return "" }
-        return String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)
-    }
-
-    private func explorationStatus(for coordinate: GeoCoordinate) -> some View {
-        let isExplored = model.explorationGrid?.isExplored(coordinate) == true
-        return Label(
-            isExplored ? "已探索区域" : "未探索区域",
-            systemImage: isExplored ? "checkmark.circle.fill" : "cloud.fog.fill"
-        )
-        .font(.caption.bold())
-        .foregroundStyle(isExplored ? Color.secondary : Color.orange)
-    }
-
-    private func distanceText(from start: GeoCoordinate, to destination: GeoCoordinate) -> String {
-        let meters = start.location.distance(from: destination.location)
-        if meters >= 1_000 { return String(format: "直线 %.1f 公里", meters / 1_000) }
-        return "直线 \(Int(meters.rounded())) 米"
-    }
-
-    private func openManualDestinationInMaps() {
-        guard let coordinate = manualCoordinate else { return }
-        let item = manualMapItem ?? MKMapItem(location: coordinate.location, address: nil)
+    private func openInMaps(_ recommendation: ExploreRecommendation) {
+        let item = recommendation.mapItem ?? MKMapItem(location: recommendation.coordinate.location, address: nil)
         let mode: String
-        switch travelMode {
+        switch model.exploreOptions.travelMode {
         case .walking: mode = MKLaunchOptionsDirectionsModeWalking
         case .cycling: mode = MKLaunchOptionsDirectionsModeCycling
         case .automobile: mode = MKLaunchOptionsDirectionsModeDriving
         }
         item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: mode])
+    }
+
+    private func openLocationSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
 }
