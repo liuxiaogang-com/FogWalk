@@ -8,13 +8,14 @@ struct RestoredStartup: Sendable {
 
 /// Disposable derived data. Bump the schema when coordinate, connection, or fog rules change.
 struct StartupSnapshot: Codable, Sendable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     let version: Int
     let calendarIdentifier: String
     let timeZoneIdentifier: String
     let summary: ImportSummary
     let grid: ExplorationGrid
     let presentations: [CachedPresentation]
+    var builtAt: Date = Date()
 
     static func build(dataset: TrackDataset) -> StartupSnapshot {
         let calendar = Calendar.current
@@ -36,14 +37,31 @@ struct StartupSnapshot: Codable, Sendable {
         version == Self.schemaVersion
             && calendarIdentifier == String(describing: Calendar.current.identifier)
             && timeZoneIdentifier == Calendar.current.timeZone.identifier
+            && (Calendar.current.isDateInToday(builtAt) || dateFiltersAreEmptyToday)
             && summary.uniqueCount > 0
             && Set(presentations.map(\.filter)) == Set(TrackTimeFilter.allCases)
             && presentations.count == TrackTimeFilter.allCases.count
     }
 
+    /// Old imported archives often contain no points in any current relative range.
+    /// Keep their expensive lifetime fog cache across midnight; only blank date views.
+    private var dateFiltersAreEmptyToday: Bool {
+        let calendar = Calendar.current
+        let now = Date()
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? .distantPast
+        let weekStart = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) ?? .distantPast
+        return (summary.latestDate ?? .distantPast) < min(monthStart, weekStart)
+    }
+
     func restoredPresentations() throws -> [TrackTimeFilter: TrackPresentation] {
         var result: [TrackTimeFilter: TrackPresentation] = [:]
-        for cached in presentations { result[cached.filter] = try cached.restore() }
+        for cached in presentations {
+            if cached.filter != .lifetime, !Calendar.current.isDateInToday(builtAt), dateFiltersAreEmptyToday {
+                result[cached.filter] = TrackPresentation(revision: cached.revision, filter: cached.filter,
+                    segments: [], isolatedPoints: [], visiblePointCount: 0, totalDistanceMeters: 0,
+                    referenceDate: cached.referenceDate, latestCoordinate: cached.latestCoordinate)
+            } else { result[cached.filter] = try cached.restore() }
+        }
         return result
     }
 }

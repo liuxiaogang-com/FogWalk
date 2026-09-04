@@ -12,7 +12,7 @@ enum RecordingMode: String, CaseIterable, Identifiable, Codable, Sendable {
 
 enum MotionState: String, Sendable {
     case unknown = "运动状态待确认", stationary = "静止", walking = "步行", running = "跑步"
-    case cycling = "骑行", automotive = "乘车"
+    case cycling = "骑行", automotive = "乘车", moving = "移动中"
     var isMoving: Bool { self != .stationary && self != .unknown }
 }
 
@@ -47,9 +47,10 @@ struct RecordingPolicy: Sendable {
             guard distance / dt <= TrackProcessor.maximumPlausibleSpeed else { return false }
             let reliableMovement = distance > max(15, previousFix.horizontalAccuracy + point.horizontalAccuracy)
             if point.speed >= 0.8 || reliableMovement {
-                if !motion.isMoving { motion = .walking }
+                if !motion.isMoving { motion = .moving }
                 stationarySince = nil
             } else if point.speed >= 0 && point.speed < 0.4 && distance < max(12, point.horizontalAccuracy) {
+                motion = .stationary
                 stationarySince = stationarySince ?? now
             }
         }

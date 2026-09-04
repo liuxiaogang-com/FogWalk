@@ -119,12 +119,13 @@ final class FogWalkTests: XCTestCase {
         XCTAssertTrue(ExplorationGrid(points: [first, second]).isExplored(midpoint))
     }
 
-    func testTodayPresentationHasVisiblePathsNearLatestPoint() throws {
+    func testDayPresentationHasVisiblePathsAtExplicitHistoricalDate() throws {
         let dataset = try loadFullDataset()
         let presentation = TrackProcessor.makePresentation(
             dataset: dataset,
             filter: .today,
-            revision: 1
+            revision: 1,
+            now: try XCTUnwrap(dataset.summary.latestDate)
         )
         XCTAssertEqual(presentation.visiblePointCount, 108)
         XCTAssertFalse(presentation.segments.isEmpty)
@@ -165,29 +166,16 @@ final class FogWalkTests: XCTestCase {
         )
     }
 
-    @MainActor
-    func testLoopPlannerDoesNotReturnFakeLoop() async {
-        let startPoint = point(
-            time: 1_700_000_000,
-            latitude: 34.7399,
-            longitude: 113.6955,
-            accuracy: 20
-        )
-        do {
-            _ = try await ExplorePlanner().recommendations(
-                start: startPoint.coordinate,
-                mode: .loop,
-                minutes: 30,
-                travelMode: .walking,
-                category: .any,
-                explorationGrid: ExplorationGrid(points: [startPoint])
-            )
-            XCTFail("A fake loop recommendation must not be returned")
-        } catch ExplorePlannerError.loopTemporarilyUnavailable {
-            // Expected until a real multi-leg route engine exists.
-        } catch {
-            XCTFail("Unexpected error: \(error)")
+    func testHistoricalDataIsNotDisplayedAsTodayOrCurrentMonth() {
+        let old = point(time: 1_700_000_000, latitude: 34.74, longitude: 113.69, accuracy: 20)
+        let data = TrackDataset(points: [old], summary: ImportSummary(recordedCSVCount: 1,
+            photoCSVCount: 0, gpxCount: 0, duplicateCount: 0, uniqueCount: 1,
+            earliestDate: old.timestamp, latestDate: old.timestamp))
+        let now = old.timestamp.addingTimeInterval(60 * 60 * 24 * 60)
+        for filter in [TrackTimeFilter.today, .sevenDays, .month] {
+            XCTAssertEqual(TrackProcessor.makePresentation(dataset: data, filter: filter, revision: 1, now: now).visiblePointCount, 0)
         }
+        XCTAssertEqual(TrackProcessor.makePresentation(dataset: data, filter: .lifetime, revision: 1, now: now).visiblePointCount, 1)
     }
 
     private func point(
@@ -269,6 +257,19 @@ final class FogWalkTests: XCTestCase {
         XCTAssertFalse(ExploreCategory.cafe.searchQueries.contains("蜜雪冰城"))
         XCTAssertTrue(ExploreCategory.tea.searchQueries.contains("蜜雪冰城"))
         XCTAssertEqual(ExploreCategory.cafe.placePriority(name: "小巷咖啡"), ExploreCategory.cafe.placePriority(name: "瑞幸咖啡"))
+    }
+
+    @MainActor
+    func testRouteFailureNeverProducesStraightLineRecommendations() {
+        let estimate = recommendation("未验证地点", longitude: 121.48, verified: false)
+        XCTAssertThrowsError(try ExplorePlanner.validatedResults([estimate], unresolvedCount: 1,
+            overBudgetCount: 0, excluding: [])) { error in
+                guard case ExplorePlannerError.routeServiceUnavailable = error else { return XCTFail("Wrong failure") }
+            }
+        XCTAssertThrowsError(try ExplorePlanner.validatedResults([], unresolvedCount: 0,
+            overBudgetCount: 2, excluding: [])) { error in
+                guard case ExplorePlannerError.noRouteWithinBudget = error else { return XCTFail("Wrong budget failure") }
+            }
     }
 
     private func recommendation(_ title: String, longitude: Double, verified: Bool = true) -> ExploreRecommendation {

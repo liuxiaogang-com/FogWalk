@@ -11,13 +11,14 @@ struct TrackProcessor: Sendable {
         dataset: TrackDataset,
         filter: TrackTimeFilter,
         revision: Int,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        now: Date = Date()
     ) -> TrackPresentation {
         guard let referenceDate = dataset.summary.latestDate else {
             return .empty
         }
 
-        let interval = dateInterval(for: filter, referenceDate: referenceDate, calendar: calendar)
+        let interval = dateInterval(for: filter, referenceDate: filter == .lifetime ? referenceDate : now, calendar: calendar)
         let visible = dataset.points.filter { interval.contains($0.timestamp) }
         guard !visible.isEmpty else {
             return TrackPresentation(

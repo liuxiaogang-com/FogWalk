@@ -13,6 +13,7 @@ struct ExploreSheet: View {
     @State private var isResolving = false
     @State private var isPlanning = false
     @State private var detail: ExploreRecommendation?
+    @State private var navigationError: String?
     @State private var overviewRequestID = 0
     @State private var recenterRequestID = 0
     @ScaledMetric(relativeTo: .body) private var cardHeight = 214.0
@@ -109,7 +110,7 @@ struct ExploreSheet: View {
             Text(isManualSelectionMode ? "地图选点" : "探索附近").font(.headline)
             Spacer()
             Button { toggleManualSelection() } label: {
-                Label(isManualSelectionMode ? "完成选点" : "选点", systemImage: "hand.tap")
+                Label(isManualSelectionMode ? "退出选点" : "选点", systemImage: "hand.tap")
                     .font(.subheadline).frame(minHeight: 44)
             }
         }
@@ -281,7 +282,8 @@ struct ExploreSheet: View {
                 HStack {
                     Text(manualMapItem?.name ?? "自选位置").font(.headline).lineLimit(2)
                     Spacer()
-                    Text(model.explorationGrid?.isExplored(coordinate) == true ? "已探索" : "未探索")
+                    Text(model.isWorking || model.libraryReadFailed ? "探索状态待确认"
+                         : model.explorationGrid?.isExplored(coordinate) == true ? "已探索" : "未探索")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(isResolving ? "正在识别地址…" : (manualMapItem?.address?.shortAddress ?? "已标记地图位置"))
@@ -337,7 +339,8 @@ struct ExploreSheet: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
-                    Text("外部导航会打开 Apple 地图。本版本尚未提供 App 内逐向导航与持续足迹保存。")
+                    if let navigationError { Text(navigationError).foregroundStyle(.orange) }
+                    Text("本 App 展示路线与探索迷雾，转向指引由 Apple 地图提供。出发前可在首页开启出行记录，后台也会保存足迹。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(24)
@@ -346,6 +349,7 @@ struct ExploreSheet: View {
             .toolbar { Button("完成") { detail = nil } }
         }
         .presentationDetents([.medium, .large])
+        .onAppear { navigationError = nil }
     }
 
     private func toggleManualSelection() {
@@ -378,14 +382,18 @@ struct ExploreSheet: View {
     }
 
     private func planManualRoute() {
+        guard !model.isWorking, !model.libraryReadFailed else {
+            manualError = "请先完成足迹数据恢复，再计算路线与探索状态。"; return
+        }
         guard let coordinate = manualCoordinate, let start = model.activeCoordinate else {
             manualError = "尚未获得起点位置，请先定位。"; return
         }
         manualTask?.cancel()
         isPlanning = true
         manualError = nil
-        let destination = manualMapItem ?? MKMapItem(location: coordinate.location, address: nil)
-        if destination.name == nil { destination.name = "自选目的地" }
+        // Reverse geocoding supplies a label, never moves the user's selected endpoint.
+        let destination = MKMapItem(location: coordinate.location, address: manualMapItem?.address)
+        destination.name = manualMapItem?.name ?? "自选目的地"
         manualTask = Task {
             do {
                 let route = try await ExplorePlanner().previewRoute(start: start, destination: destination,
@@ -410,7 +418,9 @@ struct ExploreSheet: View {
         case .cycling: mode = MKLaunchOptionsDirectionsModeCycling
         case .automobile: mode = MKLaunchOptionsDirectionsModeDriving
         }
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: mode])
+        if !item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: mode]) {
+            navigationError = "无法打开 Apple 地图，请确认已安装后重试。"
+        }
     }
 
     private func openLocationSettings() {

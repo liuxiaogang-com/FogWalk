@@ -54,6 +54,7 @@ final class AppModel: ObservableObject {
     private var recordedPoints: [TrackPoint] = []
     private var recordingRefreshTask: Task<Void, Never>?
     private var recordingRefreshInFlight = false
+    private var presentationDay = Calendar.current.startOfDay(for: Date())
 
     init(store: TrackDataStore = TrackDataStore(), preferences: UserDefaults = .standard,
          recordingStore: RecordingStore = RecordingStore()) {
@@ -68,23 +69,25 @@ final class AppModel: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
-        locationManager.onSavedPoints = { [weak self] in self?.scheduleRecordingRefresh() }
+        locationManager.onSavedPoints = { [weak self] in
+            guard let self else { return }
+            self.scheduleRecordingRefresh(immediately: !self.hasData || !self.locationManager.wantsRecording)
+        }
     }
 
-    var hasData: Bool { !recordedPoints.isEmpty || (librarySummary?.uniqueCount ?? dataset?.summary.uniqueCount ?? 0) > 0 }
+    var hasData: Bool { locationManager.savedPointCount > 0 || !recordedPoints.isEmpty || (librarySummary?.uniqueCount ?? dataset?.summary.uniqueCount ?? 0) > 0 }
     var isWorking: Bool { isLoading || isImporting || isPreparingExport }
 
     var activeCoordinate: GeoCoordinate? {
-        if let current = locationManager.currentCoordinate {
-            return ChinaCoordinateTransform.mapCoordinate(for: current)
-        }
-        return presentation.latestCoordinate ?? dataset?.points.last.map {
+        if let current = liveMapCoordinate { return current }
+        return explorationPresentation.latestCoordinate ?? dataset?.points.last.map {
             ChinaCoordinateTransform.mapCoordinate(for: $0.coordinate)
         }
     }
 
     var liveMapCoordinate: GeoCoordinate? {
-        locationManager.currentCoordinate.map {
+        guard let date = locationManager.currentCoordinateDate, Date().timeIntervalSince(date) <= 60 else { return nil }
+        return locationManager.currentCoordinate.map {
             ChinaCoordinateTransform.mapCoordinate(for: $0)
         }
     }
@@ -130,7 +133,7 @@ final class AppModel: ObservableObject {
             } catch {
                 libraryReadFailed = true
                 noticeTitle = "本地数据读取失败"
-                noticeMessage = "原有足迹档案无法读取，你仍可重新导入备份。\n\n\(error.localizedDescription)"
+                noticeMessage = "原有足迹档案无法读取，原文件未被覆盖。请保留你的备份，并检查设备存储后重试。\n\n\(error.localizedDescription)"
             }
             isLoading = false
         }
@@ -227,13 +230,12 @@ final class AppModel: ObservableObject {
     }
 
     func searchDestinations(changeBatch: Bool = false) {
-        generateRecommendations(mode: .destination, minutes: exploreOptions.minutes,
+        generateRecommendations(minutes: exploreOptions.minutes,
                                 travelMode: exploreOptions.travelMode, category: exploreOptions.category,
                                 changeBatch: changeBatch)
     }
 
     func generateRecommendations(
-        mode: ExploreMode,
         minutes: Int,
         travelMode: ExploreTravelMode,
         category: ExploreCategory,
@@ -261,7 +263,6 @@ final class AppModel: ObservableObject {
             do {
                 let result = try await ExplorePlanner().recommendations(
                     start: start,
-                    mode: mode,
                     minutes: minutes,
                     travelMode: travelMode,
                     category: category,
@@ -303,6 +304,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyStartup(_ snapshot: RestoredStartup) {
+        presentationDay = Calendar.current.startOfDay(for: Date())
         librarySummary = snapshot.summary
         explorationGrid = snapshot.grid
         baseGrid = snapshot.grid
@@ -320,6 +322,7 @@ final class AppModel: ObservableObject {
     }
 
     private func fullDataset() async throws -> TrackDataset? {
+        try await locationManager.finishPendingWrites()
         if dataset == nil { dataset = try await store.load() }
         if (librarySummary?.uniqueCount ?? 0) > 0 && dataset == nil { throw TrackDataStoreError.emptyArchive }
         let batch = try await locationManager.recordingStore.read(after: dataset?.summary.recordingCheckpoint)
@@ -333,10 +336,34 @@ final class AppModel: ObservableObject {
         locationManager.restoreRecordingIfNeeded()
         locationManager.requestCurrentLocation()
         if !hasStartedLoading { loadStoredDataIfNeeded() }
-        if hasStartedLoading && !isLoading { scheduleRecordingRefresh(immediately: true) }
+        if hasStartedLoading && !isLoading {
+            if presentationDay != Calendar.current.startOfDay(for: Date()) { refreshCalendarDayIfNeeded() }
+            else { scheduleRecordingRefresh(immediately: true) }
+        }
+    }
+
+    func refreshCalendarDayIfNeeded() {
+        guard hasStartedLoading, !isWorking,
+              presentationDay != Calendar.current.startOfDay(for: Date()) else { return }
+        isLoading = true
+        Task {
+            defer { isLoading = false }
+            do {
+                if let cached = await store.loadStartup() { applyStartup(cached) }
+                else {
+                    if dataset == nil { dataset = try await store.load() }
+                    if let dataset { try await install(dataset) }
+                }
+                // Force journal-only libraries to refresh even if no points were appended overnight.
+                recordedPoints = []
+                try await refreshRecordedPoints()
+                presentationDay = Calendar.current.startOfDay(for: Date())
+            } catch { noticeTitle = "日期更新失败"; noticeMessage = error.localizedDescription }
+        }
     }
 
     private func scheduleRecordingRefresh(immediately: Bool = false) {
+        if immediately { recordingRefreshTask?.cancel(); recordingRefreshTask = nil }
         guard UIApplication.shared.applicationState == .active, recordingRefreshTask == nil else { return }
         recordingRefreshTask = Task { [weak self] in
             if !immediately { try? await Task.sleep(for: .seconds(15)) }
@@ -365,10 +392,7 @@ final class AppModel: ObservableObject {
             let today = TrackProcessor.makePresentation(dataset: recent, filter: .today, revision: revision + 1)
             let combined = Self.combine(originals[.lifetime] ?? .empty, lifetime, revision: revision)
             let originalToday = originals[.today] ?? .empty
-            let sameDay = originalToday.referenceDate.map { first in
-                today.referenceDate.map { Calendar.current.isDate(first, inSameDayAs: $0) } ?? true
-            } ?? false
-            let day = Self.combine(sameDay ? originalToday : .empty, today, revision: revision + 1)
+            let day = Self.combine(originalToday, today, revision: revision + 1)
             return (base.incorporating(batch.points), combined, selected == .lifetime ? combined : day)
         }.value
         guard !Task.isCancelled, explorationRevision == revision else { return }
@@ -379,6 +403,9 @@ final class AppModel: ObservableObject {
         if selectedFilter == .sevenDays || selectedFilter == .month { await rebuildRecordedFilter(selectedFilter) }
         // New accepted positions can make a previous recommendation familiar.
         recommendations.removeAll { result.0.isExplored($0.coordinate) }
+        if !recommendations.contains(where: { $0.id == selectedRecommendationID }) {
+            selectedRecommendationID = recommendations.first?.id
+        }
     }
 
     nonisolated private static func combine(_ first: TrackPresentation, _ second: TrackPresentation, revision: Int) -> TrackPresentation {

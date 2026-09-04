@@ -9,15 +9,15 @@ private final class MapServiceCancellation {
 }
 
 enum ExplorePlannerError: LocalizedError {
-    case loopTemporarilyUnavailable
+    case routeServiceUnavailable
     case placeSearchUnavailable
     case noNamedDestination
     case noRouteWithinBudget
 
     var errorDescription: String? {
         switch self {
-        case .loopTemporarilyUnavailable:
-            return "真实闭环路线仍在开发中，请先使用目的地探索。"
+        case .routeServiceUnavailable:
+            return "已找到未探索地点，但暂时无法验证可通行路线。请稍后重试或更换出行方式，不会以直线估算替代道路。"
         case .placeSearchUnavailable:
             return "Apple 地图地点服务暂时没有响应，请稍后再试。"
         case .noNamedDestination:
@@ -40,16 +40,12 @@ struct ExplorePlanner {
 
     func recommendations(
         start: GeoCoordinate,
-        mode: ExploreMode,
         minutes: Int,
         travelMode: ExploreTravelMode,
         category: ExploreCategory,
         explorationGrid: ExplorationGrid,
         excluding: Set<String> = []
     ) async throws -> [ExploreRecommendation] {
-        guard mode == .destination else {
-            throw ExplorePlannerError.loopTemporarilyUnavailable
-        }
         return try await destinationRecommendations(
             start: start,
             minutes: minutes,
@@ -148,40 +144,16 @@ struct ExplorePlanner {
                 unresolvedItems.insert(Self.destinationKey(candidate.item))
             }
         }
-        if !verifiedRecommendations.isEmpty {
-            let ranked = verifiedRecommendations
-                .sorted { $0.score > $1.score }
-                .map(\.recommendation)
-            return Self.diverseResults(ranked, excluding: excluding)
-        }
-        if unresolvedItems.isEmpty, overBudgetCount > 0 { throw ExplorePlannerError.noRouteWithinBudget }
+        return try Self.validatedResults(verifiedRecommendations.sorted { $0.score > $1.score }.map(\.recommendation),
+            unresolvedCount: unresolvedItems.count, overBudgetCount: overBudgetCount, excluding: excluding)
+    }
 
-        // A named endpoint remains useful even when MKDirections has no walking
-        // graph for it. Mark the time as an estimate and let Maps retry from the
-        // device's live position instead of surfacing raw MKError code 5.
-        let fallback = routeCandidates.filter { unresolvedItems.contains(Self.destinationKey($0.item)) }.map { candidate in
-            let item = candidate.item
-            let coordinate = GeoCoordinate(
-                latitude: item.location.coordinate.latitude,
-                longitude: item.location.coordinate.longitude
-            )
-            return ExploreRecommendation(
-                title: item.name ?? category.rawValue,
-                subtitle: "仅为直线估算，实际通行时间待确认",
-                coordinate: coordinate,
-                estimatedMinutes: max(
-                    1,
-                    Int((candidate.distance / travelMode.estimatedMetersPerSecond / 60).rounded())
-                ),
-                distanceMeters: candidate.distance,
-                routeCoordinates: [],
-                routeNoveltyRatio: 0,
-                destinationNoveltyRatio: candidate.destinationNovelty,
-                mapItem: item,
-                isRouteVerified: false
-            )
-        }
-        return Self.diverseResults(fallback, excluding: excluding)
+    static func validatedResults(_ ranked: [ExploreRecommendation], unresolvedCount: Int,
+                                 overBudgetCount: Int, excluding: Set<String>) throws -> [ExploreRecommendation] {
+        let verified = ranked.filter { $0.isRouteVerified && $0.routeCoordinates.count >= 2 }
+        if !verified.isEmpty { return diverseResults(verified, excluding: excluding) }
+        if unresolvedCount == 0, overBudgetCount > 0 { throw ExplorePlannerError.noRouteWithinBudget }
+        throw ExplorePlannerError.routeServiceUnavailable
     }
 
     static func diverseResults(_ ranked: [ExploreRecommendation], excluding: Set<String>) -> [ExploreRecommendation] {
@@ -328,15 +300,11 @@ struct ExplorePlanner {
             latitude: mapItem.location.coordinate.latitude,
             longitude: mapItem.location.coordinate.longitude
         )
-        let budgetDifference = abs(etaMinutes - requestedMinutes)
-        let budgetNote = budgetDifference <= max(5, requestedMinutes / 3)
-            ? "符合时间预算"
-            : "时间略有偏差"
 
         return ScoredRecommendation(
             recommendation: ExploreRecommendation(
                 title: mapItem.name ?? "探索目的地",
-                subtitle: enforceBudget ? "\(budgetNote) · 优先穿过未知区域" : "路线预览 · 自选目的地",
+                subtitle: enforceBudget ? "单程预算内 · 优先穿过未知区域" : "路线预览 · 自选目的地",
                 coordinate: coordinate,
                 estimatedMinutes: etaMinutes,
                 distanceMeters: route.distance,

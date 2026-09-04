@@ -1,13 +1,6 @@
 import Foundation
 import MapKit
 
-enum ExploreMode: String, CaseIterable, Identifiable {
-    case destination = "目的地"
-    case loop = "闭环"
-
-    var id: Self { self }
-}
-
 enum ExploreTravelMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case walking = "步行"
     case cycling = "骑行"

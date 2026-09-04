@@ -56,6 +56,28 @@ final class RecordingTests: XCTestCase {
         XCTAssertFalse(policy.accept(point(-400), mode: .normal, now: now, maximumAge: 300))
     }
 
+    func testLocationOnlyDetectsRestAndRecoveryWithoutCallingItWalking() {
+        var policy = RecordingPolicy()
+        _ = policy.accept(point(speed: 0), mode: .saver, now: now)
+        _ = policy.accept(point(10, speed: 0), mode: .saver, now: now.addingTimeInterval(10))
+        XCTAssertEqual(policy.motion, .stationary)
+        XCTAssertTrue(policy.isResting(mode: .saver, now: now.addingTimeInterval(100)))
+        _ = policy.accept(point(110, meters: 300, speed: 5), mode: .saver, now: now.addingTimeInterval(110))
+        XCTAssertEqual(policy.motion, .moving)
+        XCTAssertFalse(policy.isResting(mode: .saver, now: now.addingTimeInterval(110)))
+    }
+
+    @MainActor
+    func testMotionAssistanceIsOptInAndPreferenceSurvivesRelaunch() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        let recorder = LocationManager(preferences: preferences)
+        XCTAssertFalse(recorder.motionAssistanceEnabled)
+        recorder.setMotionAssistance(true)
+        XCTAssertTrue(LocationManager(preferences: preferences).motionAssistanceEnabled)
+        recorder.setMotionAssistance(false)
+        XCTAssertFalse(LocationManager(preferences: preferences).motionAssistanceEnabled)
+    }
+
     func testSQLiteRelaunchDedupAndCheckpoint() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -140,6 +162,9 @@ final class RecordingTests: XCTestCase {
                                altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
                                course: 0, speed: 1, timestamp: instant.addingTimeInterval(-10))
         recorder.locationManager(CLLocationManager(), didUpdateLocations: [first])
+        try await recorder.finishPendingWrites()
+        let immediatelySaved = try await store.read()
+        XCTAssertEqual(immediatelySaved.points.count, 1, "Immediate backup must not miss pending writes")
         for _ in 0..<200 where recorder.savedPointCount < 1 { try await Task.sleep(for: .milliseconds(10)) }
         recorder.setBackground(true)
         let second = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 31.23030, longitude: 121.47000),

@@ -83,6 +83,12 @@ final class StartupPerformanceTests: XCTestCase {
         try await store.saveStartup(wrongZone)
         let zoneCache = await store.loadStartup()
         XCTAssertNil(zoneCache)
+        var yesterday = snapshot
+        yesterday.builtAt = Calendar.current.date(byAdding: .day, value: -1, to: Date())!
+        XCTAssertTrue(yesterday.isCompatible, "Old archives should retain their expensive lifetime cache")
+        let afterMidnight = try yesterday.restoredPresentations()
+        XCTAssertEqual(afterMidnight[.today]?.visiblePointCount, 0)
+        XCTAssertEqual(afterMidnight[.lifetime]?.visiblePointCount, data.points.count)
         try await store.saveStartup(snapshot)
         try await store.save(data) // same-size/same-content atomic replacement still invalidates cache
         let staleCache = await store.loadStartup()

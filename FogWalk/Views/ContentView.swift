@@ -14,11 +14,14 @@ struct ContentView: View {
         mapExperience
         .preferredColorScheme(.dark)
         .task { model.loadStoredDataIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            model.refreshCalendarDayIfNeeded()
+        }
         .fullScreenCover(isPresented: $model.isExploreSheetPresented) {
             ExploreSheet(model: model)
         }
-        .sheet(isPresented: $isLayersPresented) { layerPanel.presentationDetents([.height(280)]) }
-        .sheet(isPresented: $isReviewPresented) { reviewPanel.presentationDetents([.height(320)]) }
+        .sheet(isPresented: $isLayersPresented) { layerPanel.presentationDetents([.medium, .large]) }
+        .sheet(isPresented: $isReviewPresented) { reviewPanel.presentationDetents([.medium, .large]) }
         .sheet(isPresented: $isRecordingPresented) { RecordingPanel(recorder: model.locationManager) }
         .fileImporter(
             isPresented: $isImporterPresented,

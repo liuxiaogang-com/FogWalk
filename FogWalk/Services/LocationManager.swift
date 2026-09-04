@@ -7,6 +7,7 @@ import UIKit
 final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var currentCoordinate: GeoCoordinate?
+    @Published private(set) var currentCoordinateDate: Date?
     @Published private(set) var isRecording = false
     @Published private(set) var mode: RecordingMode
     @Published private(set) var status = "未开始记录"
@@ -14,6 +15,8 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var latestFixDate: Date?
     @Published private(set) var latestAccuracy: Double?
     @Published private(set) var savedPointCount = 0
+    @Published private(set) var motionAssistanceEnabled: Bool
+    @Published private(set) var storageErrorMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var reducedAccuracy = false
     var onSavedPoints: (() -> Void)?
@@ -29,17 +32,21 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     private var evaluationTask: Task<Void, Never>?
     private var configuredResting: Bool?
     private var pendingPoints: [TrackPoint] = []
+    private var wakeMonitoringUnavailable = false
     private let wakeRegionID = "FogWalk.recording.resume"
 
     init(preferences: UserDefaults = .standard, recordingStore: RecordingStore = RecordingStore()) {
         self.preferences = preferences
         self.recordingStore = recordingStore
         mode = RecordingMode(rawValue: preferences.string(forKey: "recording-mode-v1") ?? "") ?? .normal
+        motionAssistanceEnabled = preferences.bool(forKey: "motion-assistance-v1")
+        savedPointCount = preferences.integer(forKey: "recording-session-count-v1")
         authorizationStatus = manager.authorizationStatus
         super.init()
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
             currentCoordinate = GeoCoordinate(latitude: 31.2304, longitude: 121.4737)
+            currentCoordinateDate = Date()
         }
         #endif
         manager.delegate = self
@@ -70,13 +77,29 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         if isRecording { applyPolicy() }
     }
 
+    func setMotionAssistance(_ enabled: Bool) {
+        motionAssistanceEnabled = enabled
+        preferences.set(enabled, forKey: "motion-assistance-v1")
+        motionManager.stopActivityUpdates()
+        evaluationTask?.cancel()
+        policy.updateMotion(.unknown, confident: true, now: Date())
+        motionState = .unknown
+        configuredResting = nil
+        if isRecording {
+            startMotionAssistanceIfEnabled()
+            applyPolicy()
+        }
+    }
+
     func startRecording() {
         guard !wantsRecording else { return }
         wantsRecording = true
         preferences.set(true, forKey: "recording-enabled-v1")
         errorMessage = nil
         policy = RecordingPolicy()
+        wakeMonitoringUnavailable = false
         savedPointCount = 0
+        preferences.set(0, forKey: "recording-session-count-v1")
         if authorizationStatus == .notDetermined {
             status = "等待定位授权"
             manager.requestWhenInUseAuthorization()
@@ -86,6 +109,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     func requestAlwaysAccess() {
         if authorizationStatus == .authorizedWhenInUse { manager.requestAlwaysAuthorization() }
         else if authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+        else if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
 
     func stopRecording() {
@@ -94,6 +118,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         stopServices()
         status = pendingPoints.isEmpty ? "记录已结束" : "记录已结束，有位置等待保存"
         flushPendingPoints()
+        if pendingPoints.isEmpty { onSavedPoints?() }
     }
 
     func restoreRecordingIfNeeded() {
@@ -130,6 +155,12 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         if authorizationStatus == .authorizedAlways, CLLocationManager.significantLocationChangeMonitoringAvailable() {
             manager.startMonitoringSignificantLocationChanges()
         }
+        startMotionAssistanceIfEnabled()
+        applyPolicy()
+    }
+
+    private func startMotionAssistanceIfEnabled() {
+        guard motionAssistanceEnabled, isRecording else { return }
         if CMMotionActivityManager.isActivityAvailable() {
             motionManager.startActivityUpdates(to: .main) { [weak self] activity in
                 guard let activity else { return }
@@ -139,11 +170,10 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
                 Task { @MainActor [weak self] in self?.receivedMotion(state, confident: confident) }
             }
         }
-        applyPolicy()
     }
 
     private func receivedMotion(_ state: MotionState, confident: Bool) {
-        guard isRecording else { return }
+        guard isRecording, motionAssistanceEnabled else { return }
         policy.updateMotion(state, confident: confident, now: Date())
         motionState = policy.motion
         configuredResting = nil
@@ -185,6 +215,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     @discardableResult
     private func installWakeRegion() -> Bool {
         guard authorizationStatus == .authorizedAlways,
+              !wakeMonitoringUnavailable,
               CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self),
               let coordinate = currentCoordinate else { return false }
         if manager.monitoredRegions.contains(where: { $0.identifier == wakeRegionID }) { return true }
@@ -226,17 +257,29 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
                 let saved = try await recordingStore.append(batch, mode: batchMode, context: context)
                 pendingPoints.removeFirst(batch.count)
                 savedPointCount += saved
-                errorMessage = nil
+                preferences.set(savedPointCount, forKey: "recording-session-count-v1")
+                storageErrorMessage = nil
+                if !wantsRecording { status = "记录已结束" }
                 succeeded = true
                 onSavedPoints?()
                 NSLog("FOGWALK_RECORD saved=%ld context=%@", saved, context)
             } catch {
-                errorMessage = error.localizedDescription
+                storageErrorMessage = error.localizedDescription
                 status = "保存失败，请保持 App 打开并重试"
             }
             if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
             writeTask = nil
             if succeeded && !pendingPoints.isEmpty { flushPendingPoints() }
+        }
+    }
+
+    /// A backup must include every accepted point at the time it starts, or fail explicitly.
+    func finishPendingWrites() async throws {
+        flushPendingPoints()
+        while let task = writeTask { await task.value }
+        if !pendingPoints.isEmpty {
+            throw NSError(domain: "FogWalk.Recording", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: storageErrorMessage ?? "仍有位置尚未保存，请重试。"])
         }
     }
 
@@ -276,6 +319,8 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
             latestAccuracy = location.horizontalAccuracy
             if location.horizontalAccuracy <= 100 && age <= 30 {
                 currentCoordinate = GeoCoordinate(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+                currentCoordinateDate = location.timestamp
+                errorMessage = nil
             }
             if !isRecording {
                 status = location.horizontalAccuracy <= 100 ? "已获得当前位置" : "定位精度较低，请到开阔处重试"
@@ -318,6 +363,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
 
     func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
         guard isRecording else { return }
+        wakeMonitoringUnavailable = true
         policy.updateMotion(.unknown, confident: true, now: Date())
         configuredResting = nil
         applyPolicy()
