@@ -14,6 +14,8 @@ struct ExploreSheet: View {
     @State private var isPlanning = false
     @State private var detail: ExploreRecommendation?
     @State private var navigationError: String?
+    @State private var isOpeningNavigation = false
+    @AppStorage("navigation-app-v1") private var navigationApp: NavigationApp = .amap
     @State private var overviewRequestID = 0
     @State private var recenterRequestID = 0
     @ScaledMetric(relativeTo: .body) private var cardHeight = 214.0
@@ -334,16 +336,28 @@ struct ExploreSheet: View {
                         Label("回到地图查看", systemImage: "map").frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.borderedProminent).tint(.orange)
-                    Button { openInMaps(recommendation) } label: {
-                        Label("在 Apple 地图导航", systemImage: "arrow.up.forward.app")
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    if let navigationError { Text(navigationError).foregroundStyle(.orange) }
-                    Text("本 App 展示路线与探索迷雾，转向指引由 Apple 地图提供。出发前可在首页开启出行记录，后台也会保存足迹。")
+                    Text("将目的地交给所选地图，从当前位置重新规划路线；线路可能与本 App 的探索预览不同。出发前可在首页开启出行记录，后台也会保存足迹。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(24)
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Picker("导航软件", selection: $navigationApp) {
+                        ForEach(NavigationApp.allCases) { app in Text(app.title).tag(app) }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(isOpeningNavigation)
+                    .onChange(of: navigationApp) { _, _ in navigationError = nil }
+                    Button { openNavigation(recommendation) } label: {
+                        Label(isOpeningNavigation ? "正在打开地图…" : "在\(navigationApp.title)导航", systemImage: "arrow.up.forward.app")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.orange).disabled(isOpeningNavigation)
+                    if let navigationError { Text(navigationError).font(.caption).foregroundStyle(.orange) }
+                }
+                .padding(.horizontal, 24).padding(.vertical, 12)
+                .background(.regularMaterial)
             }
             .navigationTitle("目的地").navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("完成") { detail = nil } }
@@ -410,16 +424,16 @@ struct ExploreSheet: View {
         }
     }
 
-    private func openInMaps(_ recommendation: ExploreRecommendation) {
-        let item = recommendation.mapItem ?? MKMapItem(location: recommendation.coordinate.location, address: nil)
-        let mode: String
-        switch model.exploreOptions.travelMode {
-        case .walking: mode = MKLaunchOptionsDirectionsModeWalking
-        case .cycling: mode = MKLaunchOptionsDirectionsModeCycling
-        case .automobile: mode = MKLaunchOptionsDirectionsModeDriving
-        }
-        if !item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: mode]) {
-            navigationError = "无法打开 Apple 地图，请确认已安装后重试。"
+    private func openNavigation(_ recommendation: ExploreRecommendation) {
+        guard !isOpeningNavigation else { return }
+        isOpeningNavigation = true
+        navigationError = nil
+        let selectedApp = navigationApp
+        let mode = model.exploreOptions.travelMode
+        Task { @MainActor in
+            defer { isOpeningNavigation = false }
+            do { try await ExternalNavigation.open(recommendation, in: selectedApp, travelMode: mode) }
+            catch { navigationError = error.localizedDescription }
         }
     }
 
