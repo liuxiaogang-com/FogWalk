@@ -6,6 +6,8 @@
 
 V0.3.2 新增高德 / Apple 地图导航选择，默认高德并记忆选择；具体规则及验证见 [NAVIGATION.md](NAVIGATION.md)。
 
+独立模拟器的系统级定位回放（非手动调用定位回调）见 [SIMULATED_LOCATION_TEST.md](SIMULATED_LOCATION_TEST.md)，用于外出前检查前后台落盘与重启恢复，不替代真机锁屏和耗电测试。
+
 完整、已确认的需求与技术规则见 [PRODUCT_SPEC.md](PRODUCT_SPEC.md)。
 
 V0.2 第一轮的范围、接续清单与验收结果见 [V02_PLAN.md](V02_PLAN.md)。V0.1 本地代码基线为 `039c12b` / `v0.1-baseline`，无远程仓库，个人数据不入 Git。
