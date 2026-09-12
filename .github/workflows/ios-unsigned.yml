@@ -9,6 +9,7 @@ on:
       - 'FogWalk.xcodeproj/**'
       - 'FogWalk-Info.plist'
       - 'scripts/ci-*.sh'
+      - 'scripts/ci-*.py'
       - '.github/workflows/ios-unsigned.yml'
   workflow_dispatch:
 
@@ -22,6 +23,8 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
+    permissions:
+      contents: write
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
@@ -51,6 +54,10 @@ jobs:
             .build/unsigned/build-info.json
           if-no-files-found: error
           retention-days: 30
+      - name: Publish persistent GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci-publish-release.py .build/unsigned
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
