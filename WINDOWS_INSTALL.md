@@ -7,6 +7,7 @@
 - 主分支源码或构建配置更新时自动运行，也可在 Actions → Build unsigned iOS IPA → Run workflow 手动触发。
 - 使用 macos-26 与 Xcode 26.6，先运行不依赖个人数据的 XCTest，再构建 Release / arm64 / iPhoneOS。
 - 三项依赖本地 demodata 的测试在 CI 中明确排除：完整个人数据导入、历史日期地图显示、完整个人数据启动性能。个人 CSV、GPX、备份和截图无需上传。
+- 原有定位回调集成测试在模拟器未授予定位权限时会自行跳过；通过数和跳过数以每次测试日志为准。
 - 输出 FogWalk-版本-build构建号-提交号-unsigned.ipa、SHA-256 与 build-info.json，产物保留 30 天。诊断日志和 xcresult 保留 7 天。
 - 本地 macOS 也可运行 bash scripts/ci-test.sh 和 bash scripts/ci-build-unsigned.sh；重复测试前请为原 .build/Tests.xcresult 改名，或使用干净检出目录。
 - CI 无需 Apple ID、签名证书、描述文件或仓库签名密钥。

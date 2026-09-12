@@ -25,7 +25,7 @@ app="$archive/Products/Applications/FogWalk.app"
 test -f "$app/Info.plist"
 executable="$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Info.plist")"
 version="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Info.plist")"
-xcrun lipo -verify_arch arm64 "$app/$executable"
+xcrun lipo "$app/$executable" -verify_arch arm64
 if codesign -d "$app" > .build/codesign.log 2>&1; then
   echo "Expected an unsigned app, but a code signature is present." >&2
   exit 1
