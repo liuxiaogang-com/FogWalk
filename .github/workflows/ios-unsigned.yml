@@ -1,0 +1,63 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'FogWalk/**'
+      - 'FogWalkTests/**'
+      - 'FogWalk.xcodeproj/**'
+      - 'FogWalk-Info.plist'
+      - 'scripts/ci-*.sh'
+      - '.github/workflows/ios-unsigned.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-unsigned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+      - name: Run tests without private location fixtures
+        run: bash scripts/ci-test.sh
+      - name: Build and package unsigned device IPA
+        id: ipa
+        run: bash scripts/ci-build-unsigned.sh
+      - name: Upload IPA and checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.ipa.outputs.artifact_name }}
+          path: |
+            .build/unsigned/*.ipa
+            .build/unsigned/*.sha256
+            .build/unsigned/build-info.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-diagnostics-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            .build/*.log
+            .build/Tests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
