@@ -1,5 +1,7 @@
 # 迷雾足迹
 
+在 Windows 新开项目和会话继续开发，请先阅读 [新会话接续说明.md](新会话接续说明.md)。
+
 一个使用 SwiftUI、MapKit 和 Core Location 制作的原生 iPhone 应用。它导入“一生足迹”导出的照片位置 CSV、轨迹 CSV 与 GPX，在 Apple 地图上显示可信轨迹，并用迷雾表现已探索和未探索区域。
 
 当前功能核对、修正和验证边界以 [FUNCTIONAL_AUDIT.md](FUNCTIONAL_AUDIT.md) 为准，早期方案保留为历史记录。
@@ -12,7 +14,7 @@ V0.3.2 新增高德 / Apple 地图导航选择，默认高德并记忆选择；�
 
 GitHub Actions 自动构建未签名 iPhone IPA，以及在 Windows 上重新签名安装的步骤，见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)。
 
-V0.2 第一轮的范围、接续清单与验收结果见 [V02_PLAN.md](V02_PLAN.md)。V0.1 本地代码基线为 `039c12b` / `v0.1-baseline`，无远程仓库，个人数据不入 Git。
+V0.2 第一轮的范围、接续清单与验收结果见 [V02_PLAN.md](V02_PLAN.md)。V0.1 本地代码基线为 `039c12b` / `v0.1-baseline`，当时尚无远程仓库；现在已关联 GitHub 私有仓库并自动发布 Releases，个人数据仍不入 Git。
 
 V0.2.1 已加入大数据快速启动缓存，方案、性能实测及手机安装状态见 [STARTUP_PERFORMANCE.md](STARTUP_PERFORMANCE.md)。
 
