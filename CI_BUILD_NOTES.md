@@ -31,3 +31,11 @@
 - 完整测试仍需额外等待，时间主要花在模拟器冷启动和测试宿主编译/启动；没有承诺完整验证也能在 1 分钟内结束。Windows 不能本地执行 Xcode，真机侧载、罗盘和实际行走仍需手机验收。
 
 手动快速打包：Actions → Build unsigned iOS IPA → Run workflow → `validation_mode=build-only`。CLI 可用 `gh workflow run ios-unsigned.yml --repo liuxiaogang-com/Citywalk --ref main -f validation_mode=build-only`。默认推送仍走 `full`。
+
+## V0.3.5 发布接口恢复记录
+
+[34748575715](https://github.com/liuxiaogang-com/Citywalk/actions/runs/34748575715) 的编译和测试通过（49 通过、1 跳过、另排除 3 项私人数据测试），最终创建 Release 的请求返回 HTTP 500。无需因此重新构建 App：从 Actions 下载原 IPA，核对源码、测试日志和 SHA-256 后，可恢复发布步骤。
+
+本次恢复过程：确认版本 Release 尚不存在，建立指向已验证源码 1779a6ec52852cc98c84b139bb4ecae48fbc772f 的标签；REST 创建草稿时仅传 tag_name/name/body/draft/prerelease，上传四个附件并校验摘要。带 make_latest 的发布请求仍异常，仅 PATCH draft=false 成功；说明单独更新成功，GitHub latest 查询也确认新版本已成为最新 Release。未覆盖任何历史附件。发布前后 SHA-256 均为 9e5681088f1b09aa724573447147382b2a0b2564af7aebcfdb7c685a304cba29。
+
+这是本次接口恢复的实测路径，不推断 GitHub 全站故障；历史 Actions 仍显示发布失败，实际完成的版本为 [v0.3.5-build1016](https://github.com/liuxiaogang-com/Citywalk/releases/tag/v0.3.5-build1016)。任何写请求返回不确定结果后，应先读取远端状态，再决定是否补做，避免重复创建或覆盖。

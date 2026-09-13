@@ -13,3 +13,5 @@
 - 构建脚本检查 IPA 的主图标注册、实际 AppIcon PNG 和 Assets.car；build-info.json 记录源资源哈希与编译文件名。
 
 配置依据：[Apple 的 AppIcon 资源目录说明](https://developer.apple.com/documentation/xcode/configuring-your-app-icon)。
+
+验证结果：V0.3.5 / build 1016 的 IPA 已包含 CFBundlePrimaryIcon / AppIcon 注册、编译的 AppIcon PNG 与 Assets.car；build-info.json 中资源哈希与上述一致。发布后的 Release 已下载比对，确认与云端打包产物完全相同。
