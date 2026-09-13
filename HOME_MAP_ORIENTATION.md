@@ -20,11 +20,15 @@ GPS 只接受精度不超过 100 米、30 秒内、坐标有效且时间未倒�
 
 罗盘优先使用真北方向，暂不可用时使用磁北方向；负精度及无效数值不参与旋转。方向来自手机罗盘，并非 GPS 行进方向。磁性车架、室内环境及设备传感器可能影响实际表现。
 
+`FogMapCanvas` 是内嵌原生 MKMapView 的普通 UIView 容器；首页初始镜头等地图完成有效布局后再应用，布局前的传感器更新合并到暂存镜头，避免初始距离被压到最小值。
+
 `FogMapView` 的首页模式显示独立位置箭头，并在更新朝向/位置时复用迷雾与轨迹覆盖层。探索页的推荐、选点、路线展示保留现有方式；共用的定位镜头重置补充了 heading 和 pitch 归零。
 
 这次提供前台地图居中与朝向跟随；没有增加逐转向语音导航、道路吸附或车道引导。保持首页开启会使用前台 GPS 和罗盘，实际耗电需真机测试。
 
 ## 回归与验收
+
+V0.3.4 当前验证：源码 `ddc875b429b53651ff68adcca175c3aec5c39a78` 经 [Actions 34746760137](https://github.com/liuxiaogang-com/Citywalk/actions/runs/34746760137) 验证，47 项通过、1 项按既有定位权限条件跳过、0 失败，另排除 3 项个人数据测试。初始 4,000 米镜头、缩放/拖动后的朝向持续更新、北方朝向、立即居中并保持缩放、箭头显示均已通过地图交互测试。已发布 [v0.3.4-build1014](https://github.com/liuxiaogang-com/Citywalk/releases/tag/v0.3.4-build1014)，本地已校验未签名 IPA；真机传感器与安装体验仍待验收。
 
 V0.3.3 历史验证记录：源码 `4634eec899ffabaa00b3d6224f8ad056bfe3da86` 经 [Actions 34743248166](https://github.com/liuxiaogang-com/Citywalk/actions/runs/34743248166) 验证：46 项通过、1 项按既有逻辑因模拟器定位权限跳过、0 失败，另有 3 项个人数据测试预先排除。已发布 [v0.3.3-build1006](https://github.com/liuxiaogang-com/Citywalk/releases/tag/v0.3.3-build1006)，Windows 下载后通过 SHA-256、ZIP CRC、arm64/iPhoneOS、未签名和可执行权限校验。真机罗盘、行走跟随和耗电尚待安装后验收。
 

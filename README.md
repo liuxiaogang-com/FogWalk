@@ -14,7 +14,7 @@ V0.3.2 新增高德 / Apple 地图导航选择，默认高德并记忆选择；�
 
 完整、已确认的需求与技术规则见 [PRODUCT_SPEC.md](PRODUCT_SPEC.md)。
 
-GitHub Actions 自动构建未签名 iPhone IPA，以及在 Windows 上重新签名安装的步骤，见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)。
+GitHub Actions 自动构建未签名 iPhone IPA，以及在 Windows 上重新签名安装的步骤，见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)。构建耗时、失败排查与已实测的快速打包模式见 [CI_BUILD_NOTES.md](CI_BUILD_NOTES.md)。
 
 V0.2 第一轮的范围、接续清单与验收结果见 [V02_PLAN.md](V02_PLAN.md)。V0.1 本地代码基线为 `039c12b` / `v0.1-baseline`，当时尚无远程仓库；现在已关联 GitHub 私有仓库并自动发布 Releases，个人数据仍不入 Git。
 
