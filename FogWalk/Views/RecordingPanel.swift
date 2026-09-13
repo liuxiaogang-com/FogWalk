@@ -49,6 +49,8 @@ struct RecordingPanel: View {
                 Section("权限与后台") {
                     LabeledContent("位置访问", value: authorizationText)
                     LabeledContent("精确位置", value: recorder.reducedAccuracy ? "未开启" : "已开启")
+                    LabeledContent("后台 App 刷新", value: recorder.backgroundRefreshText)
+                    LabeledContent("后台续跑", value: recorder.backgroundContinuationText)
                     if recorder.motionAssistanceEnabled { LabeledContent("运动识别", value: motionText) }
                     if recorder.authorizationStatus != .authorizedAlways {
                         Button("申请始终允许定位") { recorder.requestAlwaysAccess() }
@@ -56,13 +58,14 @@ struct RecordingPanel: View {
                     Button("打开系统设置") {
                         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                     }
-                    Text("开始记录后支持切到后台和锁屏，系统会显示定位标识。建议开启“始终”和“精确位置”；不开启运动辅助时使用定位位移判断。")
+                    Text("首次点“开始记录”后会记住长期记录意图；以后系统因定位事件重新启动 App 时会自动恢复。建议开启“始终”、精确位置和后台 App 刷新。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("静止唤醒可能有延迟。手动划掉 App、关闭权限或重启后未解锁时，不能保证继续记录。外出请勿划掉 App。耗电效果仍需实测。")
+                    Text("程序不依赖后台定时器：移动时记录，静止时由系统自动暂停或使用低功耗事件等待唤醒。静止唤醒可能有延迟；手动划掉 App、关闭权限或重启后未解锁时不能保证继续记录。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("出行记录").navigationBarTitleDisplayMode(.inline)
+            .onAppear { recorder.refreshSystemStatus() }
             .toolbar { Button("完成") { dismiss() } }
         }
     }

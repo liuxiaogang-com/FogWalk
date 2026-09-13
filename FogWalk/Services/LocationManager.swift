@@ -19,6 +19,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var storageErrorMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var reducedAccuracy = false
+    @Published private(set) var backgroundRefreshStatus: UIBackgroundRefreshStatus
     var onSavedPoints: (() -> Void)?
     let recordingStore: RecordingStore
     private let manager = CLLocationManager()
@@ -33,6 +34,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     private var configuredResting: Bool?
     private var pendingPoints: [TrackPoint] = []
     private var wakeMonitoringUnavailable = false
+    private var backgroundActivitySession: CLBackgroundActivitySession?
     private let wakeRegionID = "FogWalk.recording.resume"
 
     init(preferences: UserDefaults = .standard, recordingStore: RecordingStore = RecordingStore()) {
@@ -42,6 +44,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         motionAssistanceEnabled = preferences.bool(forKey: "motion-assistance-v1")
         savedPointCount = preferences.integer(forKey: "recording-session-count-v1")
         authorizationStatus = manager.authorizationStatus
+        backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
         super.init()
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--ui-fixture") {
@@ -121,9 +124,12 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         if pendingPoints.isEmpty { onSavedPoints?() }
     }
 
-    func restoreRecordingIfNeeded() {
+    func restoreRecordingIfNeeded(launchedForLocationEvent: Bool = false) {
+        refreshSystemStatus()
         guard preferences.bool(forKey: "recording-enabled-v1"), !wantsRecording else { return }
         guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
+        NSLog("FOGWALK_RECORD_RESTORE locationEvent=%d backgroundRefresh=%ld",
+              launchedForLocationEvent ? 1 : 0, backgroundRefreshStatus.rawValue)
         wantsRecording = true
         beginAuthorizedRecording()
     }
@@ -134,10 +140,34 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
             evaluationTask?.cancel()
             flushPendingPoints()
         } else if isRecording {
-            reducedAccuracy = manager.accuracyAuthorization == .reducedAccuracy
+            refreshSystemStatus()
             policy.updateMotion(.unknown, confident: true, now: Date())
             configuredResting = nil
             applyPolicy()
+        }
+    }
+
+    func refreshSystemStatus() {
+        reducedAccuracy = manager.accuracyAuthorization == .reducedAccuracy
+        backgroundRefreshStatus = UIApplication.shared.backgroundRefreshStatus
+    }
+
+    var backgroundRefreshText: String {
+        switch backgroundRefreshStatus {
+        case .available: "已开启"
+        case .denied: "已关闭"
+        case .restricted: "受系统限制"
+        @unknown default: "未知"
+        }
+    }
+
+    var backgroundContinuationText: String {
+        guard wantsRecording else { return "未开启（请开始记录）" }
+        guard backgroundRefreshStatus == .available else { return "受限（请开启后台 App 刷新）" }
+        switch authorizationStatus {
+        case .authorizedAlways: return "已就绪（移动事件可唤醒）"
+        case .authorizedWhenInUse: return "当前会话可后台，建议始终允许"
+        default: return "受限（请开启定位权限）"
         }
     }
 
@@ -149,12 +179,11 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
             return
         }
         isRecording = true
+        ensureBackgroundActivitySession()
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         configuredResting = nil
-        if authorizationStatus == .authorizedAlways, CLLocationManager.significantLocationChangeMonitoringAvailable() {
-            manager.startMonitoringSignificantLocationChanges()
-        }
+        updateSystemWakeMonitoring()
         startMotionAssistanceIfEnabled()
         applyPolicy()
     }
@@ -170,6 +199,27 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
                 Task { @MainActor [weak self] in self?.receivedMotion(state, confident: confident) }
             }
         }
+    }
+
+    private func ensureBackgroundActivitySession() {
+        guard backgroundActivitySession == nil else { return }
+        // The session itself doesn't request fixes. It keeps the user-visible
+        // background location authorization active while the recording intent
+        // is active, including across suspension and system relaunch.
+        backgroundActivitySession = CLBackgroundActivitySession()
+    }
+
+    private func updateSystemWakeMonitoring() {
+        guard isRecording, authorizationStatus == .authorizedAlways else {
+            manager.stopMonitoringSignificantLocationChanges()
+            manager.stopMonitoringVisits()
+            removeWakeRegion()
+            return
+        }
+        if CLLocationManager.significantLocationChangeMonitoringAvailable() {
+            manager.startMonitoringSignificantLocationChanges()
+        }
+        manager.startMonitoringVisits()
     }
 
     private func receivedMotion(_ state: MotionState, confident: Bool) {
@@ -235,8 +285,11 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     private func stopServices() {
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
+        manager.stopMonitoringVisits()
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
+        backgroundActivitySession?.invalidate()
+        backgroundActivitySession = nil
         motionManager.stopActivityUpdates()
         evaluationTask?.cancel()
         removeWakeRegion()
@@ -285,7 +338,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-        reducedAccuracy = manager.accuracyAuthorization == .reducedAccuracy
+        refreshSystemStatus()
         NSLog("FOGWALK_LOCATION_AUTH status=%ld accuracy=%ld", authorizationStatus.rawValue, manager.accuracyAuthorization.rawValue)
         if authorizationStatus == .denied || authorizationStatus == .restricted {
             stopServices()
@@ -294,9 +347,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         }
         if wantsRecording {
             if isRecording {
-                if authorizationStatus == .authorizedAlways, CLLocationManager.significantLocationChangeMonitoringAvailable() {
-                    manager.startMonitoringSignificantLocationChanges()
-                } else { manager.stopMonitoringSignificantLocationChanges() }
+                updateSystemWakeMonitoring()
                 configuredResting = nil
                 applyPolicy()
             } else { beginAuthorizedRecording() }
@@ -350,12 +401,21 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     }
 
     func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        guard isRecording else { return }
         standardRunning = true
         status = "\(mode.rawValue)模式记录中"
     }
 
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         guard isRecording, region.identifier == wakeRegionID else { return }
+        policy.updateMotion(.unknown, confident: true, now: Date())
+        configuredResting = nil
+        applyPolicy()
+    }
+
+    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+        guard isRecording else { return }
+        NSLog("FOGWALK_VISIT accuracy=%.1f", visit.horizontalAccuracy)
         policy.updateMotion(.unknown, confident: true, now: Date())
         configuredResting = nil
         applyPolicy()

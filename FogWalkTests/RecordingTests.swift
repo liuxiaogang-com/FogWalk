@@ -68,6 +68,35 @@ final class RecordingTests: XCTestCase {
     }
 
     @MainActor
+    func testLocationWakeDoesNotRestoreRecordingWithoutUserIntent() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        let recorder = LocationManager(preferences: preferences)
+        recorder.restoreRecordingIfNeeded(launchedForLocationEvent: true)
+        XCTAssertFalse(recorder.wantsRecording)
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertFalse(preferences.bool(forKey: "recording-enabled-v1"))
+    }
+
+    @MainActor
+    func testExplicitStopIgnoresDelayedSystemResumeAndRegionWake() {
+        let preferences = UserDefaults(suiteName: UUID().uuidString)!
+        preferences.set(true, forKey: "recording-enabled-v1")
+        let recorder = LocationManager(preferences: preferences)
+        recorder.stopRecording()
+        let systemManager = CLLocationManager()
+        recorder.locationManagerDidResumeLocationUpdates(systemManager)
+        recorder.locationManager(systemManager, didExitRegion: CLCircularRegion(
+            center: CLLocationCoordinate2D(latitude: 31.23, longitude: 121.47),
+            radius: 150, identifier: "FogWalk.recording.resume"))
+        recorder.restoreRecordingIfNeeded(launchedForLocationEvent: true)
+        XCTAssertFalse(recorder.isRecording)
+        XCTAssertFalse(recorder.wantsRecording)
+        XCTAssertFalse(preferences.bool(forKey: "recording-enabled-v1"))
+        XCTAssertEqual(recorder.status, "记录已结束")
+        XCTAssertEqual(recorder.savedPointCount, 0)
+    }
+
+    @MainActor
     func testMotionAssistanceIsOptInAndPreferenceSurvivesRelaunch() {
         let preferences = UserDefaults(suiteName: UUID().uuidString)!
         let recorder = LocationManager(preferences: preferences)

@@ -16,8 +16,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         if AppRuntime.isUnitTestHost { return true }
         // Re-establish only a previously user-enabled recording session.
+        let launchedForLocationEvent = launchOptions?[.location] != nil
         AppRuntime.model.locationManager.setBackground(application.applicationState == .background)
-        AppRuntime.model.locationManager.restoreRecordingIfNeeded()
+        AppRuntime.model.locationManager.restoreRecordingIfNeeded(launchedForLocationEvent: launchedForLocationEvent)
         return true
     }
 

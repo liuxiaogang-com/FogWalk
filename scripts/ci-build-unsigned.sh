@@ -57,6 +57,10 @@ with zipfile.ZipFile(ipa) as package:
     info = plistlib.loads(package.read("Payload/FogWalk.app/Info.plist"))
     assert info["CFBundleSupportedPlatforms"] == ["iPhoneOS"]
     assert info["CFBundleIdentifier"] == "com.citywalk.FogWalkDemo"
+    primary_icon = info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon", {})
+    assert primary_icon.get("CFBundleIconName") == "AppIcon", "Missing primary AppIcon registration"
+    icon_files = [name for name in names if Path(name).name.startswith("AppIcon") and name.endswith(".png")]
+    assert icon_files and "Payload/FogWalk.app/Assets.car" in names, "Missing compiled app icon assets"
     assert not any("_CodeSignature/" in name or name.endswith("embedded.mobileprovision") for name in names)
 digest = hashlib.sha256(ipa.read_bytes()).hexdigest()
 ipa.with_suffix(".ipa.sha256").write_text(f"{digest}  {ipa.name}\n", encoding="utf-8")
@@ -70,6 +74,11 @@ metadata = {
     "bundle_identifier": info["CFBundleIdentifier"],
     "platform": info["CFBundleSupportedPlatforms"],
     "signed": False,
+    "app_icon": {
+        "name": primary_icon["CFBundleIconName"],
+        "source_sha256": hashlib.sha256(Path("FogWalk/Assets.xcassets/AppIcon.appiconset/AppIcon.png").read_bytes()).hexdigest(),
+        "compiled_files": icon_files,
+    },
     "validation_mode": os.environ.get("CI_VALIDATION_MODE", "local"),
     "tests": "pending" if os.environ.get("CI_VALIDATION_MODE") == "full" else "not_run",
     "run_url": f"{os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
