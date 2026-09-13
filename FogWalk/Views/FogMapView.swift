@@ -32,6 +32,7 @@ struct FogMapView: UIViewRepresentable {
     var orientation: MapOrientation?
     var deviceHeading: Double?
     var followsCurrentLocation = false
+    var isRecenterPending = false
     var onUserMovedMap: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -98,7 +99,7 @@ struct FogMapView: UIViewRepresentable {
             )
         }
 
-        if centersOnCurrentCoordinate,
+        if centersOnCurrentCoordinate, !isRecenterPending,
            let liveCurrentCoordinate,
            !context.coordinator.hasAppliedLiveCenter,
            !context.coordinator.hasUserMovedMap {
@@ -208,7 +209,7 @@ struct FogMapView: UIViewRepresentable {
             }
         }
 
-        if !context.coordinator.hasPositionedMap,
+        if !context.coordinator.hasPositionedMap, !isRecenterPending,
            let coordinate = currentCoordinate ?? presentation.latestCoordinate {
             context.coordinator.hasPositionedMap = true
             if centersOnCurrentCoordinate {

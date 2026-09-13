@@ -83,6 +83,7 @@ struct ContentView: View {
                 orientation: model.homeMapLocation.orientation,
                 deviceHeading: model.homeMapLocation.heading,
                 followsCurrentLocation: model.homeMapLocation.isFollowing,
+                isRecenterPending: model.homeMapLocation.isLocating,
                 onUserMovedMap: { model.homeMapLocation.pauseFollowing() }
             )
             .ignoresSafeArea()

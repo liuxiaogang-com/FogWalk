@@ -17,7 +17,7 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var coordinate: GeoCoordinate?
     @Published private(set) var heading: Double?
     @Published private(set) var orientation: MapOrientation
-    @Published private(set) var isFollowing = false
+    @Published private(set) var isFollowing = true
     @Published private(set) var isLocating = false
     @Published private(set) var message: String?
     @Published private(set) var recenterCoordinate: GeoCoordinate?

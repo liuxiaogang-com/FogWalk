@@ -83,12 +83,15 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertNotNil(arrow.directionImageView.image)
         XCTAssertEqual(atan2(arrow.directionImageView.transform.b, arrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
-        state.live = state.second
+        // Keep the heading assertion's marker on screen throughout this walk;
+        // offscreen annotation views are legitimately culled/reused by MapKit.
+        let walkedCoordinate = GeoCoordinate(latitude: 31.2302, longitude: 121.4702)
+        state.live = walkedCoordinate
         state.heading = 180
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(map.camera.heading, 180, accuracy: 0.1)
-        XCTAssertEqual(map.centerCoordinate.latitude, state.second.latitude, accuracy: 0.0001)
-        XCTAssertEqual(annotation.coordinate.longitude, state.second.longitude, accuracy: 0.0001)
+        XCTAssertEqual(map.centerCoordinate.latitude, walkedCoordinate.latitude, accuracy: 0.0001)
+        XCTAssertEqual(annotation.coordinate.longitude, walkedCoordinate.longitude, accuracy: 0.0001)
         XCTAssertTrue(map.overlays.contains(where: { ($0 as AnyObject) === (fog as AnyObject) }))
 
         // Exercise the same immediate coordinator gate set by a map gesture,
@@ -115,6 +118,17 @@ final class MapInteractionTests: XCTestCase {
         state.live = nil
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertFalse(map.annotations.contains(where: { $0 is HomeLocationAnnotation }))
+
+        // A first cached fix arriving while a fresh fix is requested must not
+        // take the initial-auto-center path around the request's freshness gate.
+        state.follows = false
+        state.pending = true
+        coordinator.hasAppliedLiveCenter = false
+        coordinator.hasPositionedMap = false
+        map.setCenter(browsingCenter.clCoordinate, animated: false)
+        state.live = state.start
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
     }
 
     private func findMap(_ view: UIView) -> MKMapView? {
@@ -148,6 +162,7 @@ private final class MapHarnessState: ObservableObject {
     @Published var heading: Double?
     @Published var live: GeoCoordinate?
     @Published var follows = false
+    @Published var pending = false
     init() { selected = firstID }
 }
 
@@ -163,6 +178,7 @@ private struct MapHarness: View {
                                  ExploreMapDestination(id: state.secondID, coordinate: state.second, rank: 2)],
             selectedDestinationID: state.selected, onDestinationSelection: { state.selected = $0 },
             orientation: state.orientation, deviceHeading: state.heading, followsCurrentLocation: state.follows,
+            isRecenterPending: state.pending,
             onUserMovedMap: { state.follows = false })
     }
 }
