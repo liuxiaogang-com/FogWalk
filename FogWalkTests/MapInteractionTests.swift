@@ -79,9 +79,9 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertFalse(map.isRotateEnabled)
         XCTAssertEqual(map.camera.heading, 90, accuracy: 0.1)
         let annotation = try XCTUnwrap(map.annotations.first(where: { $0 is HomeLocationAnnotation }))
-        let arrow = try XCTUnwrap(map.view(for: annotation))
-        XCTAssertNotNil(arrow.image)
-        XCTAssertEqual(atan2(arrow.transform.b, arrow.transform.a), 0, accuracy: 0.01)
+        let arrow = try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView)
+        XCTAssertNotNil(arrow.directionImageView.image)
+        XCTAssertEqual(atan2(arrow.directionImageView.transform.b, arrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
         state.live = state.second
         state.heading = 180
@@ -95,13 +95,15 @@ final class MapInteractionTests: XCTestCase {
         // before the asynchronous SwiftUI pause notification has been delivered.
         let coordinator = try XCTUnwrap(map.delegate as? FogMapView.Coordinator)
         coordinator.hasUserMovedMap = true
-        map.setCenter(state.first.clCoordinate, animated: false)
+        let browsingCenter = GeoCoordinate(latitude: 31.2305, longitude: 121.4705)
+        map.setCenter(browsingCenter.clCoordinate, animated: false)
         state.heading = 270
         state.live = state.start
         try await Task.sleep(for: .milliseconds(400))
-        XCTAssertEqual(map.centerCoordinate.latitude, state.first.latitude, accuracy: 0.0001)
+        XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
         XCTAssertEqual(map.camera.heading, 180, accuracy: 0.1)
-        XCTAssertEqual(atan2(arrow.transform.b, arrow.transform.a), .pi / 2, accuracy: 0.01)
+        let visibleArrow = try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView)
+        XCTAssertEqual(atan2(visibleArrow.directionImageView.transform.b, visibleArrow.directionImageView.transform.a), .pi / 2, accuracy: 0.01)
 
         state.orientation = .northUp
         state.recenter += 1
@@ -118,6 +120,18 @@ final class MapInteractionTests: XCTestCase {
     private func findMap(_ view: UIView) -> MKMapView? {
         if let map = view as? MKMapView { return map }
         return view.subviews.compactMap { findMap($0) }.first
+    }
+
+    func testMapControlSymbolsAndArrowSurviveAnnotationLayout() {
+        for orientation in MapOrientation.allCases { XCTAssertNotNil(UIImage(systemName: orientation.icon)) }
+        let view = HomeLocationAnnotationView(annotation: nil, reuseIdentifier: "heading-test")
+        view.update(heading: 270, cameraHeading: 180)
+        view.transform = .identity
+        view.layoutIfNeeded()
+        XCTAssertEqual(atan2(view.directionImageView.transform.b, view.directionImageView.transform.a), .pi / 2, accuracy: 0.01)
+        view.update(heading: nil, cameraHeading: 180)
+        XCTAssertNotNil(view.directionImageView.image)
+        XCTAssertEqual(view.directionImageView.transform, .identity)
     }
 }
 

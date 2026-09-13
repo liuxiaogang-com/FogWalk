@@ -268,7 +268,9 @@ struct FogMapView: UIViewRepresentable {
         func updateHomeLocation(on mapView: MKMapView, coordinate: GeoCoordinate?) {
             if let coordinate {
                 if let liveAnnotation {
-                    liveAnnotation.coordinate = coordinate.clCoordinate
+                    if liveAnnotation.coordinate.latitude != coordinate.latitude || liveAnnotation.coordinate.longitude != coordinate.longitude {
+                        liveAnnotation.coordinate = coordinate.clCoordinate
+                    }
                 } else {
                     let annotation = HomeLocationAnnotation(coordinate: coordinate.clCoordinate)
                     liveAnnotation = annotation
@@ -302,14 +304,8 @@ struct FogMapView: UIViewRepresentable {
         }
 
         func updateHeadingArrow(on mapView: MKMapView) {
-            guard let liveAnnotation, let view = mapView.view(for: liveAnnotation) else { return }
-            let symbol = deviceHeading == nil ? "smallcircle.filled.circle.fill" : "location.north.circle.fill"
-            view.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))
-            view.tintColor = .systemBlue
-            view.backgroundColor = .white
-            view.layer.cornerRadius = view.bounds.width / 2
-            view.transform = CGAffineTransform(rotationAngle: CGFloat((deviceHeading ?? mapView.camera.heading) - mapView.camera.heading) * .pi / 180)
-            view.accessibilityLabel = deviceHeading == nil ? "当前位置，方向暂不可用" : "当前位置与手机朝向"
+            guard let liveAnnotation, let view = mapView.view(for: liveAnnotation) as? HomeLocationAnnotationView else { return }
+            view.update(heading: deviceHeading, cameraHeading: mapView.camera.heading)
         }
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
@@ -357,14 +353,14 @@ struct FogMapView: UIViewRepresentable {
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is HomeLocationAnnotation {
                 let identifier = "HomeCurrentLocation"
-                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
-                    ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? HomeLocationAnnotationView
+                    ?? HomeLocationAnnotationView(annotation: annotation, reuseIdentifier: identifier)
                 view.annotation = annotation
                 view.displayPriority = .required
                 view.zPriority = .max
                 view.isEnabled = false
                 view.isAccessibilityElement = true
-                view.image = UIImage(systemName: "location.north.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))
+                view.update(heading: deviceHeading, cameraHeading: mapView.camera.heading)
                 return view
             }
             guard let destination = annotation as? ExploreDestinationAnnotation else { return nil }
@@ -402,6 +398,40 @@ final class HomeLocationAnnotation: NSObject, MKAnnotation {
     init(coordinate: CLLocationCoordinate2D) {
         self.coordinate = coordinate
         super.init()
+    }
+}
+
+final class HomeLocationAnnotationView: MKAnnotationView {
+    let directionImageView = UIImageView()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
+        directionImageView.frame = CGRect(x: 5, y: 5, width: 34, height: 34)
+        directionImageView.contentMode = .scaleAspectFit
+        directionImageView.backgroundColor = .white
+        directionImageView.layer.cornerRadius = 17
+        addSubview(directionImageView)
+    }
+
+    func update(heading: Double?, cameraHeading: Double) {
+        let symbol = heading == nil ? "smallcircle.filled.circle.fill" : "location.north.circle.fill"
+        directionImageView.image = UIImage(systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))?
+            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+        // MapKit owns the annotation view's transform during camera/layout updates.
+        // Rotate its content instead, so panning and view reuse cannot reset the arrow.
+        directionImageView.transform = CGAffineTransform(rotationAngle: CGFloat((heading ?? cameraHeading) - cameraHeading) * .pi / 180)
+        accessibilityLabel = heading == nil ? "当前位置，方向暂不可用" : "当前位置与手机朝向"
     }
 }
 

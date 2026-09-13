@@ -8,7 +8,7 @@ enum MapOrientation: String, CaseIterable, Identifiable {
 
     var id: Self { self }
     var title: String { self == .northUp ? "北方朝上" : "手机朝向" }
-    var icon: String { self == .northUp ? "compass" : "location.north.line.fill" }
+    var icon: String { self == .northUp ? "safari" : "location.north.line.fill" }
 }
 
 /// Foreground map sensors never change the recorder's distance filter or write footprints.
