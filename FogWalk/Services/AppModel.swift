@@ -19,7 +19,6 @@ final class AppModel: ObservableObject {
     @Published var selectedFilter: TrackTimeFilter = .today
     @Published var isFogVisible = !ProcessInfo.processInfo.arguments.contains("--fog-off")
     @Published var isTrackVisible = false
-    @Published private(set) var mainMapRecenterRequestID = 0
     @Published var mainMapOverviewRequestID = 0
     @Published var isExploreSheetPresented = ProcessInfo.processInfo.arguments.contains("--open-explore")
     @Published var recommendations: [ExploreRecommendation] = []
@@ -39,6 +38,7 @@ final class AppModel: ObservableObject {
     }
 
     let locationManager: LocationManager
+    let homeMapLocation: HomeMapLocation
     private let store: TrackDataStore
     private var hasStartedLoading = false
     private var revision = 0
@@ -61,6 +61,7 @@ final class AppModel: ObservableObject {
         self.store = store
         self.preferences = preferences
         locationManager = LocationManager(preferences: preferences, recordingStore: recordingStore)
+        homeMapLocation = HomeMapLocation(preferences: preferences)
         let restored = preferences.data(forKey: "explore-options-v2")
             .flatMap { try? JSONDecoder().decode(ExploreOptions.self, from: $0) }
         exploreOptions = restored ?? ExploreOptions()
@@ -68,6 +69,9 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
+            .store(in: &cancellables)
+        homeMapLocation.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         locationManager.onSavedPoints = { [weak self] in
             guard let self else { return }
@@ -86,6 +90,7 @@ final class AppModel: ObservableObject {
     }
 
     var liveMapCoordinate: GeoCoordinate? {
+        if homeMapLocation.isActive, let coordinate = homeMapLocation.coordinate { return coordinate }
         guard let date = locationManager.currentCoordinateDate, Date().timeIntervalSince(date) <= 60 else { return nil }
         return locationManager.currentCoordinate.map {
             ChinaCoordinateTransform.mapCoordinate(for: $0)
@@ -93,8 +98,7 @@ final class AppModel: ObservableObject {
     }
 
     func recenterMainMap() {
-        locationManager.requestCurrentLocation()
-        mainMapRecenterRequestID &+= 1
+        homeMapLocation.requestRecenter()
     }
 
     func loadStoredDataIfNeeded() {

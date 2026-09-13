@@ -28,6 +28,11 @@ struct FogMapView: UIViewRepresentable {
     var onDestinationSelection: ((UUID) -> Void)?
     var isLongPressSelectionEnabled = false
     var onLongPressSelection: ((GeoCoordinate) -> Void)?
+    // Only the home map owns these controls; destination maps keep their camera behavior.
+    var orientation: MapOrientation?
+    var deviceHeading: Double?
+    var followsCurrentLocation = false
+    var onUserMovedMap: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -38,7 +43,7 @@ struct FogMapView: UIViewRepresentable {
         mapView.delegate = context.coordinator
         mapView.showsCompass = false
         mapView.showsScale = true
-        mapView.showsUserLocation = true
+        mapView.showsUserLocation = orientation == nil
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--ui-fixture") { mapView.showsUserLocation = false }
         #endif
@@ -73,20 +78,23 @@ struct FogMapView: UIViewRepresentable {
         context.coordinator.isLongPressSelectionEnabled = isLongPressSelectionEnabled
         context.coordinator.onLongPressSelection = onLongPressSelection
         context.coordinator.onDestinationSelection = onDestinationSelection
+        context.coordinator.onUserMovedMap = onUserMovedMap
+        context.coordinator.deviceHeading = deviceHeading
+        mapView.isRotateEnabled = orientation == nil
 
         if context.coordinator.lastRecenterRequestID != recenterRequestID,
            let recenterCoordinate {
             context.coordinator.lastRecenterRequestID = recenterRequestID
             context.coordinator.hasPositionedMap = true
+            context.coordinator.hasAppliedLiveCenter = true
+            context.coordinator.hasUserMovedMap = false
             let distance = CLLocation(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
                 .distance(from: recenterCoordinate.location)
-            mapView.setRegion(
-                MKCoordinateRegion(
-                    center: recenterCoordinate.clCoordinate,
-                    latitudinalMeters: recenterSpanMeters,
-                    longitudinalMeters: recenterSpanMeters
-                ),
-                animated: distance < 10_000 && mapView.region.span.latitudeDelta < 0.2
+            mapView.setCamera(
+                MKMapCamera(lookingAtCenter: recenterCoordinate.clCoordinate,
+                            fromDistance: recenterSpanMeters, pitch: 0,
+                            heading: orientation == .phoneHeading ? (deviceHeading ?? 0) : 0),
+                animated: orientation == nil && distance < 10_000 && mapView.region.span.latitudeDelta < 0.2
             )
         }
 
@@ -231,6 +239,11 @@ struct FogMapView: UIViewRepresentable {
                 )
             }
         }
+        if let orientation {
+            context.coordinator.updateHomeLocation(on: mapView, coordinate: liveCurrentCoordinate)
+            context.coordinator.updateHomeCamera(on: mapView, orientation: orientation,
+                                                 coordinate: liveCurrentCoordinate, follows: followsCurrentLocation)
+        }
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
@@ -245,13 +258,75 @@ struct FogMapView: UIViewRepresentable {
         var isLongPressSelectionEnabled = false
         var onLongPressSelection: ((GeoCoordinate) -> Void)?
         var onDestinationSelection: ((UUID) -> Void)?
+        var onUserMovedMap: (() -> Void)?
+        var deviceHeading: Double?
+        var liveAnnotation: HomeLocationAnnotation?
+        private var lastOrientation: MapOrientation?
+        private var lastFollowCoordinate: GeoCoordinate?
+        private var lastFollowHeading: Double?
+
+        func updateHomeLocation(on mapView: MKMapView, coordinate: GeoCoordinate?) {
+            if let coordinate {
+                if let liveAnnotation {
+                    liveAnnotation.coordinate = coordinate.clCoordinate
+                } else {
+                    let annotation = HomeLocationAnnotation(coordinate: coordinate.clCoordinate)
+                    liveAnnotation = annotation
+                    mapView.addAnnotation(annotation)
+                }
+            } else if let liveAnnotation {
+                mapView.removeAnnotation(liveAnnotation)
+                self.liveAnnotation = nil
+            }
+            updateHeadingArrow(on: mapView)
+        }
+
+        func updateHomeCamera(on mapView: MKMapView, orientation: MapOrientation,
+                              coordinate: GeoCoordinate?, follows: Bool) {
+            let orientationChanged = lastOrientation != orientation
+            lastOrientation = orientation
+            let targetHeading = orientation == .northUp ? 0 : (deviceHeading ?? mapView.camera.heading)
+            let canFollow = follows && !hasUserMovedMap && coordinate != nil
+            if orientationChanged || (canFollow && (lastFollowCoordinate != coordinate || lastFollowHeading != targetHeading)) {
+                let camera = mapView.camera.copy() as! MKMapCamera
+                if canFollow, let coordinate { camera.centerCoordinate = coordinate.clCoordinate }
+                // When browsing freely, sensor updates must not pull the map away from the user's gesture.
+                if orientationChanged || canFollow { camera.heading = targetHeading }
+                camera.pitch = 0
+                mapView.setCamera(camera, animated: false)
+                lastFollowCoordinate = canFollow ? coordinate : nil
+                lastFollowHeading = canFollow ? targetHeading : nil
+            }
+            if !canFollow { lastFollowCoordinate = nil; lastFollowHeading = nil }
+            updateHeadingArrow(on: mapView)
+        }
+
+        func updateHeadingArrow(on mapView: MKMapView) {
+            guard let liveAnnotation, let view = mapView.view(for: liveAnnotation) else { return }
+            let symbol = deviceHeading == nil ? "smallcircle.filled.circle.fill" : "location.north.circle.fill"
+            view.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))
+            view.tintColor = .systemBlue
+            view.backgroundColor = .white
+            view.layer.cornerRadius = view.bounds.width / 2
+            view.transform = CGAffineTransform(rotationAngle: CGFloat((deviceHeading ?? mapView.camera.heading) - mapView.camera.heading) * .pi / 180)
+            view.accessibilityLabel = deviceHeading == nil ? "当前位置，方向暂不可用" : "当前位置与手机朝向"
+        }
+
+        func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            updateHeadingArrow(on: mapView)
+        }
 
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
             func isInteracting(_ view: UIView) -> Bool {
                 if view.gestureRecognizers?.contains(where: { $0.state == .began || $0.state == .changed }) == true { return true }
                 return view.subviews.contains(where: isInteracting)
             }
-            if isInteracting(mapView) { hasUserMovedMap = true }
+            if isInteracting(mapView) {
+                hasUserMovedMap = true
+                // Delegate callbacks can run during a representable update.
+                let callback = onUserMovedMap
+                DispatchQueue.main.async { callback?() }
+            }
         }
 
         @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -280,6 +355,18 @@ struct FogMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is HomeLocationAnnotation {
+                let identifier = "HomeCurrentLocation"
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
+                    ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                view.annotation = annotation
+                view.displayPriority = .required
+                view.zPriority = .max
+                view.isEnabled = false
+                view.isAccessibilityElement = true
+                view.image = UIImage(systemName: "location.north.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))
+                return view
+            }
             guard let destination = annotation as? ExploreDestinationAnnotation else { return nil }
             let identifier = "ExploreDestination"
             let marker = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
@@ -297,12 +384,24 @@ struct FogMapView: UIViewRepresentable {
             return marker
         }
 
+        func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
+            updateHeadingArrow(on: mapView)
+        }
+
         func mapView(_ mapView: MKMapView, didSelect annotation: MKAnnotation) {
             guard let destination = annotation as? ExploreDestinationAnnotation,
                   let id = destination.id else { return }
             onDestinationSelection?(id)
             mapView.deselectAnnotation(annotation, animated: false)
         }
+    }
+}
+
+final class HomeLocationAnnotation: NSObject, MKAnnotation {
+    @objc dynamic var coordinate: CLLocationCoordinate2D
+    init(coordinate: CLLocationCoordinate2D) {
+        self.coordinate = coordinate
+        super.init()
     }
 }
 

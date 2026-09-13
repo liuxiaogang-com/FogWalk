@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppRuntime.model
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
@@ -14,6 +15,10 @@ struct ContentView: View {
         mapExperience
         .preferredColorScheme(.dark)
         .task { model.loadStoredDataIfNeeded() }
+        .onAppear { updateMapSensors() }
+        .onDisappear { model.homeMapLocation.setActive(false) }
+        .onChange(of: scenePhase) { _, _ in updateMapSensors() }
+        .onChange(of: model.isExploreSheetPresented) { _, _ in updateMapSensors() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             model.refreshCalendarDayIfNeeded()
         }
@@ -67,14 +72,18 @@ struct ContentView: View {
                 isFogVisible: model.isFogVisible && model.hasData,
                 isTrackVisible: model.isTrackVisible,
                 currentCoordinate: model.activeCoordinate,
-                liveCurrentCoordinate: model.liveMapCoordinate,
+                liveCurrentCoordinate: model.homeMapLocation.coordinate,
                 centersOnCurrentCoordinate: true,
                 initialSpanMeters: 3_000,
-                recenterCoordinate: model.liveMapCoordinate,
-                recenterRequestID: model.mainMapRecenterRequestID,
+                recenterCoordinate: model.homeMapLocation.recenterCoordinate,
+                recenterRequestID: model.homeMapLocation.recenterRequestID,
                 recenterSpanMeters: 3_000,
                 trackPresentation: model.presentation,
-                overviewRequestID: model.mainMapOverviewRequestID
+                overviewRequestID: model.mainMapOverviewRequestID,
+                orientation: model.homeMapLocation.orientation,
+                deviceHeading: model.homeMapLocation.heading,
+                followsCurrentLocation: model.homeMapLocation.isFollowing,
+                onUserMovedMap: { model.homeMapLocation.pauseFollowing() }
             )
             .ignoresSafeArea()
 
@@ -89,15 +98,16 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
                 Spacer()
-                HStack {
-                    if model.liveMapCoordinate == nil {
-                        Text(model.hasData ? "暂以最近足迹为参考位置" : "定位后即可探索，无需先导入")
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let message = mapStatusMessage {
+                        Text(message)
                             .font(.caption2).foregroundStyle(.secondary)
                             .padding(10).background(.regularMaterial, in: Capsule())
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 0)
                     mapControls
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
                 exploreButton
                 Button {
                     if model.hasData { isReviewPresented = true } else { isImporterPresented = true }
@@ -203,10 +213,49 @@ struct ContentView: View {
     private var mapControls: some View {
         HStack(spacing: 7) {
             controlButton(icon: "square.3.layers.3d", label: "图层", isActive: false) { isLayersPresented = true }
-            controlButton(icon: "location.fill", label: "定位", isActive: false) {
+            Menu {
+                ForEach(MapOrientation.allCases) { orientation in
+                    Button {
+                        model.homeMapLocation.selectOrientation(orientation)
+                    } label: {
+                        Label(orientation.title, systemImage: model.homeMapLocation.orientation == orientation ? "checkmark" : orientation.icon)
+                    }
+                }
+            } label: {
+                Label(model.homeMapLocation.orientation.title, systemImage: model.homeMapLocation.orientation.icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(model.homeMapLocation.isFollowing ? .orange : .primary)
+                    .padding(.horizontal, 10).frame(height: 44)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            .accessibilityLabel("地图朝向")
+            .accessibilityValue(model.homeMapLocation.orientation.title)
+            controlButton(icon: "location.fill", label: model.homeMapLocation.isLocating ? "定位中" : "定位",
+                          isActive: model.homeMapLocation.isFollowing || model.homeMapLocation.isLocating) {
                 model.recenterMainMap()
             }
+            .disabled(model.homeMapLocation.isLocating)
         }
+        .sensoryFeedback(.selection, trigger: model.homeMapLocation.orientation)
+        .sensoryFeedback(.selection, trigger: model.homeMapLocation.isLocating)
+    }
+
+    private func updateMapSensors() {
+        // Permission prompts make the scene inactive; keep the pending request until
+        // the app actually backgrounds or leaves the home map.
+        model.homeMapLocation.setActive(scenePhase != .background && !model.isExploreSheetPresented)
+    }
+
+    private var mapStatusMessage: String? {
+        let location = model.homeMapLocation
+        if location.isLocating { return "正在获取最新位置…" }
+        if let message = location.message { return message }
+        if location.coordinate == nil {
+            return model.hasData ? "暂以最近足迹为参考位置，点击定位更新" : "点击定位即可探索，无需先导入"
+        }
+        if location.orientation == .phoneHeading && location.heading == nil { return "等待手机方向，请远离磁性物体" }
+        if !location.isFollowing { return "自由浏览 · 点击定位恢复居中跟随" }
+        return nil
     }
 
     private var layerPanel: some View {
@@ -230,6 +279,7 @@ struct ContentView: View {
                 Text(model.hasData ? "查看指定时间的历史轨迹，不会重新遮住过去探索过的区域。" : "还没有历史足迹，可以先探索或从更多菜单导入。")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Button("在地图查看轨迹") {
+                    model.homeMapLocation.pauseFollowing()
                     model.isTrackVisible = true
                     model.mainMapOverviewRequestID &+= 1
                     isReviewPresented = false
@@ -346,7 +396,7 @@ struct ContentView: View {
                 .frame(height: 44)
                 .background(.ultraThinMaterial, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MapControlButtonStyle())
         .accessibilityLabel(label)
     }
 
@@ -366,6 +416,15 @@ struct ContentView: View {
             return String(format: "%.1f km", meters / 1_000)
         }
         return "\(Int(meters.rounded())) m"
+    }
+}
+
+private struct MapControlButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.65 : 1)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
