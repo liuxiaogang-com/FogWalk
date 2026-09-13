@@ -9,7 +9,10 @@
          </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
-   <TestAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv = "YES">
+   <TestAction buildConfiguration = "Debug" selectedDebuggerIdentifier = "" selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn" shouldUseLaunchSchemeArgsEnv = "NO">
+      <EnvironmentVariables>
+         <EnvironmentVariable key = "FOGWALK_UNIT_TEST_HOST" value = "1" isEnabled = "YES"/>
+      </EnvironmentVariables>
       <Testables>
          <TestableReference skipped = "NO" parallelizable = "NO">
             <BuildableReference BuildableIdentifier = "primary" BlueprintIdentifier = "A50000000000000000000002" BuildableName = "FogWalkTests.xctest" BlueprintName = "FogWalkTests" ReferencedContainer = "container:FogWalk.xcodeproj"/>
@@ -29,4 +32,3 @@
    <AnalyzeAction buildConfiguration = "Debug"/>
    <ArchiveAction buildConfiguration = "Release" revealArchiveInOrganizer = "YES"/>
 </Scheme>
-

@@ -5,7 +5,9 @@
 源码是原生 iOS SwiftUI 项目，实际编译需要 macOS + Xcode。Windows 通过 GitHub Actions 触发云端构建即可，无需本地 Mac。
 
 - 主分支源码或构建配置更新时自动运行，也可在 Actions → Build unsigned iOS IPA → Run workflow 手动触发。
-- 使用 macos-26 与 Xcode 26.6，先运行不依赖个人数据的 XCTest，再构建 Release / arm64 / iPhoneOS。
+- 使用 macos-26 与 Xcode 26.6，提前启动模拟器，同时构建 Release / arm64 / iPhoneOS；先上传 IPA，再运行不依赖个人数据的 XCTest。测试使用隔离宿主，不启动正式首页、GPS 和权限弹窗。
+- 默认 `full` 模式：完整测试通过才发布 Release。手动运行可选 `build-only`：只打包并上传 Actions artifact，明确不运行测试、不发布 Release，也不替换最新已验证版本。
+- 提前上传的 Actions IPA 中，`build-info.json` 的 `tests` 为 `pending`（待验证）或 `not_run`（仅打包）；完成验证的 Release 附件中为 `passed`。
 - 三项依赖本地 demodata 的测试在 CI 中明确排除：完整个人数据导入、历史日期地图显示、完整个人数据启动性能。个人 CSV、GPX、备份和截图无需上传。
 - 原有定位回调集成测试在模拟器未授予定位权限时会自行跳过；通过数和跳过数以每次测试日志为准。
 - 每次成功构建自动发布到 [GitHub Releases](https://github.com/liuxiaogang-com/Citywalk/releases)：保存 IPA、SHA-256、build-info.json 和本安装说明。Release 资产不受 Actions artifact 保留期影响；只要仓库和 Release 未被删除，可持续下载历史版本。私有仓库下载需登录有权限的 GitHub 账号。

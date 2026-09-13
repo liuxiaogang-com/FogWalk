@@ -79,7 +79,7 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertFalse(map.isRotateEnabled)
         XCTAssertEqual(map.camera.heading, 90, accuracy: 0.1)
         let annotation = try XCTUnwrap(map.annotations.first(where: { $0 is HomeLocationAnnotation }))
-        let arrow = try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView)
+        let arrow = try await waitForArrow(on: map, annotation: annotation)
         XCTAssertNotNil(arrow.directionImageView.image)
         XCTAssertEqual(atan2(arrow.directionImageView.transform.b, arrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
@@ -111,7 +111,7 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
         XCTAssertEqual(map.camera.heading, 270, accuracy: 0.1)
         XCTAssertEqual(map.camera.centerCoordinateDistance, zoomDistance, accuracy: 1)
-        let visibleArrow = try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView)
+        let visibleArrow = try await waitForArrow(on: map, annotation: annotation)
         XCTAssertEqual(atan2(visibleArrow.directionImageView.transform.b, visibleArrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
         state.orientation = .northUp
@@ -137,6 +137,29 @@ final class MapInteractionTests: XCTestCase {
     private func findMap(_ view: UIView) -> MKMapView? {
         if let map = view as? MKMapView { return map }
         return view.subviews.compactMap { findMap($0) }.first
+    }
+
+    private func waitForArrow(on map: MKMapView, annotation: MKAnnotation) async throws -> HomeLocationAnnotationView {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            map.layoutIfNeeded()
+            if let view = map.view(for: annotation) as? HomeLocationAnnotationView { return view }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let point = map.convert(annotation.coordinate, toPointTo: map)
+        let screenshot = UIGraphicsImageRenderer(bounds: map.bounds).image { _ in
+            map.drawHierarchy(in: map.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: screenshot)
+        attachment.name = "Missing location arrow"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView,
+            "Arrow missing after layout: point=\(point), bounds=\(map.bounds), coordinate=\(annotation.coordinate), center=\(map.centerCoordinate), heading=\(map.camera.heading)")
+    }
+
+    func testUnitTestsUseIsolatedHost() {
+        XCTAssertTrue(AppRuntime.isUnitTestHost)
     }
 
     func testMapControlSymbolsAndArrowSurviveAnnotationLayout() {

@@ -18,6 +18,8 @@ args = parser.parse_args()
 directory = args.directory.resolve()
 metadata_path = directory / "build-info.json"
 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+if metadata.get("validation_mode") != "full" or os.environ.get("CI_TEST_STATUS") != "passed":
+    raise SystemExit("Release publication requires full validation and successful tests.")
 filename = metadata["file"]
 if Path(filename).name != filename or "/" in filename or "\\" in filename:
     raise SystemExit("The IPA filename must be a basename.")
@@ -63,6 +65,9 @@ print(json.dumps({"tag": tag, "commit": commit, "assets": [str(p) for p in asset
 if args.dry_run:
     print(notes)
     raise SystemExit(0)
+
+metadata["tests"] = "passed"
+metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 gh = os.environ.get("GH_EXE", "gh")
 # Each run/attempt has its own tag. Never replace an existing historical release.

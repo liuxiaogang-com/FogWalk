@@ -70,6 +70,8 @@ metadata = {
     "bundle_identifier": info["CFBundleIdentifier"],
     "platform": info["CFBundleSupportedPlatforms"],
     "signed": False,
+    "validation_mode": os.environ.get("CI_VALIDATION_MODE", "local"),
+    "tests": "pending" if os.environ.get("CI_VALIDATION_MODE") == "full" else "not_run",
     "run_url": f"{os.environ.get('GITHUB_SERVER_URL', '')}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
     "xcode": subprocess.check_output(["xcodebuild", "-version"], text=True).strip(),
 }
@@ -85,7 +87,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "### Unsigned iPhone IPA"
     echo "- File: $artifact_name.ipa"
     echo "- Requires iOS 26 or later and re-signing before installation."
-    echo "- Three tests requiring private demodata are excluded; other tests must pass."
+    echo "- Validation mode: ${CI_VALIDATION_MODE:-local}. This artifact is uploaded before tests."
+    echo "- Full mode publishes a Release only after tests pass. Build-only mode skips tests and Release publication."
     echo "- SHA-256 and build provenance are included in the artifact."
   } >> "$GITHUB_STEP_SUMMARY"
 fi

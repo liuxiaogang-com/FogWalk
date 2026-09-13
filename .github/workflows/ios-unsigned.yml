@@ -12,6 +12,14 @@ on:
       - 'scripts/ci-*.py'
       - '.github/workflows/ios-unsigned.yml'
   workflow_dispatch:
+    inputs:
+      validation_mode:
+        description: 'full: run tests and publish Release; build-only: IPA artifact without tests or Release'
+        type: choice
+        default: full
+        options:
+          - full
+          - build-only
 
 permissions:
   contents: read
@@ -28,6 +36,7 @@ jobs:
     timeout-minutes: 30
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CI_VALIDATION_MODE: ${{ inputs.validation_mode || 'full' }}
     defaults:
       run:
         shell: bash
@@ -39,8 +48,9 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild -showsdks
-      - name: Run tests without private location fixtures
-        run: bash scripts/ci-test.sh
+      - name: Start simulator while device IPA builds
+        if: env.CI_VALIDATION_MODE == 'full'
+        run: bash scripts/ci-prepare-simulator.sh
       - name: Build and package unsigned device IPA
         id: ipa
         run: bash scripts/ci-build-unsigned.sh
@@ -54,9 +64,14 @@ jobs:
             .build/unsigned/build-info.json
           if-no-files-found: error
           retention-days: 30
+      - name: Run tests without private location fixtures
+        if: env.CI_VALIDATION_MODE == 'full'
+        run: bash scripts/ci-test.sh
       - name: Publish persistent GitHub Release
+        if: success() && env.CI_VALIDATION_MODE == 'full'
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_TEST_STATUS: passed
         run: python3 scripts/ci-publish-release.py .build/unsigned
       - name: Upload diagnostics
         if: always()
