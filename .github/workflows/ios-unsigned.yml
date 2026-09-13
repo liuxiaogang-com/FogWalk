@@ -48,9 +48,6 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild -showsdks
-      - name: Start simulator while device IPA builds
-        if: env.CI_VALIDATION_MODE == 'full'
-        run: bash scripts/ci-prepare-simulator.sh
       - name: Build and package unsigned device IPA
         id: ipa
         run: bash scripts/ci-build-unsigned.sh
@@ -64,6 +61,9 @@ jobs:
             .build/unsigned/build-info.json
           if-no-files-found: error
           retention-days: 30
+      - name: Start simulator for tests
+        if: env.CI_VALIDATION_MODE == 'full'
+        run: bash scripts/ci-prepare-simulator.sh
       - name: Run tests without private location fixtures
         if: env.CI_VALIDATION_MODE == 'full'
         run: bash scripts/ci-test.sh

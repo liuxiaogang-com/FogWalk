@@ -62,16 +62,22 @@ struct FogMapView: UIViewRepresentable {
         longPress.minimumPressDuration = 0.55
         longPress.allowableMovement = 12
         mapView.addGestureRecognizer(longPress)
-        mapView.setRegion(
-            MKCoordinateRegion(
-                center: (liveCurrentCoordinate ?? currentCoordinate ?? presentation.latestCoordinate)?.clCoordinate
-                    ?? CLLocationCoordinate2D(latitude: 35, longitude: 105),
-                latitudinalMeters: initialSpanMeters,
-                longitudinalMeters: initialSpanMeters
-            ),
-            animated: false
-        )
+        setInitialViewport(on: mapView,
+            center: (liveCurrentCoordinate ?? currentCoordinate ?? presentation.latestCoordinate)?.clCoordinate
+                ?? CLLocationCoordinate2D(latitude: 35, longitude: 105), animated: false)
         return mapView
+    }
+
+    private func setInitialViewport(on mapView: MKMapView, center: CLLocationCoordinate2D, animated: Bool) {
+        if let orientation {
+            // The representable initially has zero bounds. Use an explicit
+            // distance before copying its camera for heading/position updates.
+            mapView.setCamera(MKMapCamera(lookingAtCenter: center, fromDistance: initialSpanMeters,
+                pitch: 0, heading: orientation == .phoneHeading ? (deviceHeading ?? 0) : 0), animated: animated)
+        } else {
+            mapView.setRegion(MKCoordinateRegion(center: center,
+                latitudinalMeters: initialSpanMeters, longitudinalMeters: initialSpanMeters), animated: animated)
+        }
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
@@ -107,14 +113,8 @@ struct FogMapView: UIViewRepresentable {
            !context.coordinator.hasUserMovedMap {
             context.coordinator.hasAppliedLiveCenter = true
             context.coordinator.hasPositionedMap = true
-            mapView.setRegion(
-                MKCoordinateRegion(
-                    center: liveCurrentCoordinate.clCoordinate,
-                    latitudinalMeters: initialSpanMeters,
-                    longitudinalMeters: initialSpanMeters
-                ),
-                animated: context.coordinator.overlayState != nil
-            )
+            setInitialViewport(on: mapView, center: liveCurrentCoordinate.clCoordinate,
+                animated: orientation == nil && context.coordinator.overlayState != nil)
         }
         let state = OverlayState(
             revision: presentation.revision,
@@ -215,14 +215,7 @@ struct FogMapView: UIViewRepresentable {
            let coordinate = currentCoordinate ?? presentation.latestCoordinate {
             context.coordinator.hasPositionedMap = true
             if centersOnCurrentCoordinate {
-                mapView.setRegion(
-                    MKCoordinateRegion(
-                        center: coordinate.clCoordinate,
-                        latitudinalMeters: initialSpanMeters,
-                        longitudinalMeters: initialSpanMeters
-                    ),
-                    animated: false
-                )
+                setInitialViewport(on: mapView, center: coordinate.clCoordinate, animated: false)
             } else if let overlay = context.coordinator.overlays.compactMap({ $0 as? ExplorationOverlay }).first,
                       !overlay.contentMapRect.isNull,
                       !overlay.contentMapRect.isEmpty {

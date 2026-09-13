@@ -24,4 +24,4 @@ echo "$(date -u +%FT%TZ) Request simulator boot"
 if [[ "$(cat .build/test-simulator-state)" != "Booted" ]]; then
   xcrun simctl boot "$device_id"
 fi
-# Boot continues in CoreSimulator while the next step archives the device app.
+# Boot continues in CoreSimulator while the next step builds the test host.

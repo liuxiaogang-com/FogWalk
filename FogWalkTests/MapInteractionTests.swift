@@ -78,13 +78,15 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertFalse(map.showsUserLocation)
         XCTAssertFalse(map.isRotateEnabled)
         XCTAssertEqual(map.camera.heading, 90, accuracy: 0.1)
+        XCTAssertEqual(map.camera.centerCoordinateDistance, 4_000, accuracy: 1)
+        XCTAssertFalse(map.annotations.contains(where: { $0 is ExploreDestinationAnnotation }))
         let annotation = try XCTUnwrap(map.annotations.first(where: { $0 is HomeLocationAnnotation }))
         let arrow = try await waitForArrow(on: map, annotation: annotation)
         XCTAssertNotNil(arrow.directionImageView.image)
         XCTAssertEqual(atan2(arrow.directionImageView.transform.b, arrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
-        // Keep the heading assertion's marker on screen throughout this walk;
-        // offscreen annotation views are legitimately culled/reused by MapKit.
+        // The home fixture has no destination overview; its initial distance
+        // is explicit, so this short walk remains inside the viewport.
         let walkedCoordinate = GeoCoordinate(latitude: 31.2302, longitude: 121.4702)
         state.live = walkedCoordinate
         state.heading = 180
@@ -111,6 +113,7 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
         XCTAssertEqual(map.camera.heading, 270, accuracy: 0.1)
         XCTAssertEqual(map.camera.centerCoordinateDistance, zoomDistance, accuracy: 1)
+        XCTAssertTrue(map.bounds.contains(map.convert(annotation.coordinate, toPointTo: map)))
         let visibleArrow = try await waitForArrow(on: map, annotation: annotation)
         XCTAssertEqual(atan2(visibleArrow.directionImageView.transform.b, visibleArrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
@@ -197,10 +200,10 @@ private struct MapHarness: View {
         FogMapView(presentation: .empty, isFogVisible: true, isTrackVisible: false,
             currentCoordinate: state.start, liveCurrentCoordinate: state.live, centersOnCurrentCoordinate: true,
             recenterCoordinate: state.start, recenterRequestID: state.recenter,
-            highlightedRoute: [state.start, state.selected == state.firstID ? state.first : state.second],
-            destinationCoordinate: state.selected == state.firstID ? state.first : state.second,
-            destinationMarkers: [ExploreMapDestination(id: state.firstID, coordinate: state.first, rank: 1),
-                                 ExploreMapDestination(id: state.secondID, coordinate: state.second, rank: 2)],
+            highlightedRoute: state.orientation == nil ? [state.start, state.selected == state.firstID ? state.first : state.second] : [],
+            destinationCoordinate: state.orientation == nil ? (state.selected == state.firstID ? state.first : state.second) : nil,
+            destinationMarkers: state.orientation == nil ? [ExploreMapDestination(id: state.firstID, coordinate: state.first, rank: 1),
+                                 ExploreMapDestination(id: state.secondID, coordinate: state.second, rank: 2)] : [],
             selectedDestinationID: state.selected, onDestinationSelection: { state.selected = $0 },
             orientation: state.orientation, deviceHeading: state.heading, followsCurrentLocation: state.follows,
             onUserMovedMap: { state.follows = false })
