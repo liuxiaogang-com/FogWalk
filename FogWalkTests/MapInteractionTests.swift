@@ -79,7 +79,7 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertFalse(map.isRotateEnabled)
         XCTAssertEqual(map.camera.heading, 90, accuracy: 0.1)
         XCTAssertEqual(map.camera.centerCoordinateDistance, 4_000, accuracy: 1)
-        XCTAssertFalse(map.annotations.contains(where: { $0 is ExploreDestinationAnnotation }))
+        XCTAssertTrue(map.annotations.allSatisfy { $0 is HomeLocationAnnotation })
         let annotation = try XCTUnwrap(map.annotations.first(where: { $0 is HomeLocationAnnotation }))
         let arrow = try await waitForArrow(on: map, annotation: annotation)
         XCTAssertNotNil(arrow.directionImageView.image)
