@@ -38,8 +38,9 @@ struct FogMapView: UIViewRepresentable {
         Coordinator()
     }
 
-    func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView(frame: .zero)
+    func makeUIView(context: Context) -> FogMapCanvas {
+        let canvas = FogMapCanvas(frame: .zero)
+        let mapView = canvas.mapView
         mapView.delegate = context.coordinator
         mapView.showsCompass = false
         mapView.showsScale = true
@@ -62,17 +63,18 @@ struct FogMapView: UIViewRepresentable {
         longPress.minimumPressDuration = 0.55
         longPress.allowableMovement = 12
         mapView.addGestureRecognizer(longPress)
-        setInitialViewport(on: mapView,
+        setInitialViewport(on: canvas,
             center: (liveCurrentCoordinate ?? currentCoordinate ?? presentation.latestCoordinate)?.clCoordinate
                 ?? CLLocationCoordinate2D(latitude: 35, longitude: 105), animated: false)
-        return mapView
+        return canvas
     }
 
-    private func setInitialViewport(on mapView: MKMapView, center: CLLocationCoordinate2D, animated: Bool) {
+    private func setInitialViewport(on canvas: FogMapCanvas, center: CLLocationCoordinate2D, animated: Bool) {
+        let mapView = canvas.mapView
         if let orientation {
             // The representable initially has zero bounds. Use an explicit
             // distance before copying its camera for heading/position updates.
-            mapView.setCamera(MKMapCamera(lookingAtCenter: center, fromDistance: initialSpanMeters,
+            canvas.setHomeCamera(MKMapCamera(lookingAtCenter: center, fromDistance: initialSpanMeters,
                 pitch: 0, heading: orientation == .phoneHeading ? (deviceHeading ?? 0) : 0), animated: animated)
         } else {
             mapView.setRegion(MKCoordinateRegion(center: center,
@@ -80,7 +82,8 @@ struct FogMapView: UIViewRepresentable {
         }
     }
 
-    func updateUIView(_ mapView: MKMapView, context: Context) {
+    func updateUIView(_ canvas: FogMapCanvas, context: Context) {
+        let mapView = canvas.mapView
         context.coordinator.isLongPressSelectionEnabled = isLongPressSelectionEnabled
         context.coordinator.onLongPressSelection = onLongPressSelection
         context.coordinator.onDestinationSelection = onDestinationSelection
@@ -98,13 +101,15 @@ struct FogMapView: UIViewRepresentable {
                 .distance(from: recenterCoordinate.location)
             let camera = orientation == nil
                 ? MKMapCamera(lookingAtCenter: recenterCoordinate.clCoordinate, fromDistance: recenterSpanMeters, pitch: 0, heading: 0)
-                : mapView.camera.copy() as! MKMapCamera
+                : canvas.homeCameraSnapshot
             camera.centerCoordinate = recenterCoordinate.clCoordinate
-            camera.heading = orientation == .phoneHeading ? (deviceHeading ?? mapView.camera.heading) : 0
+            camera.heading = orientation == .phoneHeading ? (deviceHeading ?? camera.heading) : 0
             camera.pitch = 0
-            mapView.setCamera(camera,
-                animated: orientation == nil && distance < 10_000 && mapView.region.span.latitudeDelta < 0.2
-            )
+            if orientation != nil {
+                canvas.setHomeCamera(camera, animated: false)
+            } else {
+                mapView.setCamera(camera, animated: distance < 10_000 && mapView.region.span.latitudeDelta < 0.2)
+            }
         }
 
         if centersOnCurrentCoordinate,
@@ -113,7 +118,7 @@ struct FogMapView: UIViewRepresentable {
            !context.coordinator.hasUserMovedMap {
             context.coordinator.hasAppliedLiveCenter = true
             context.coordinator.hasPositionedMap = true
-            setInitialViewport(on: mapView, center: liveCurrentCoordinate.clCoordinate,
+            setInitialViewport(on: canvas, center: liveCurrentCoordinate.clCoordinate,
                 animated: orientation == nil && context.coordinator.overlayState != nil)
         }
         let state = OverlayState(
@@ -215,7 +220,7 @@ struct FogMapView: UIViewRepresentable {
            let coordinate = currentCoordinate ?? presentation.latestCoordinate {
             context.coordinator.hasPositionedMap = true
             if centersOnCurrentCoordinate {
-                setInitialViewport(on: mapView, center: coordinate.clCoordinate, animated: false)
+                setInitialViewport(on: canvas, center: coordinate.clCoordinate, animated: false)
             } else if let overlay = context.coordinator.overlays.compactMap({ $0 as? ExplorationOverlay }).first,
                       !overlay.contentMapRect.isNull,
                       !overlay.contentMapRect.isEmpty {
@@ -237,7 +242,7 @@ struct FogMapView: UIViewRepresentable {
         }
         if let orientation {
             context.coordinator.updateHomeLocation(on: mapView, coordinate: liveCurrentCoordinate)
-            context.coordinator.updateHomeCamera(on: mapView, orientation: orientation,
+            context.coordinator.updateHomeCamera(on: canvas, orientation: orientation,
                                                  coordinate: liveCurrentCoordinate, follows: followsCurrentLocation)
         }
     }
@@ -278,21 +283,23 @@ struct FogMapView: UIViewRepresentable {
             updateHeadingArrow(on: mapView)
         }
 
-        func updateHomeCamera(on mapView: MKMapView, orientation: MapOrientation,
+        func updateHomeCamera(on canvas: FogMapCanvas, orientation: MapOrientation,
                               coordinate: GeoCoordinate?, follows: Bool) {
+            let mapView = canvas.mapView
             let orientationChanged = lastOrientation != orientation
             lastOrientation = orientation
-            let targetHeading = orientation == .northUp ? 0 : (deviceHeading ?? mapView.camera.heading)
+            let currentCamera = canvas.homeCameraSnapshot
+            let targetHeading = orientation == .northUp ? 0 : (deviceHeading ?? currentCamera.heading)
             let canFollow = follows && !hasUserMovedMap && coordinate != nil
-            let headingChanged = abs(mapView.camera.heading - targetHeading) > 0.1
+            let headingChanged = abs(currentCamera.heading - targetHeading) > 0.1
             if orientationChanged || headingChanged || (canFollow && lastFollowCoordinate != coordinate) {
-                let camera = mapView.camera.copy() as! MKMapCamera
+                let camera = currentCamera
                 if canFollow, let coordinate { camera.centerCoordinate = coordinate.clCoordinate }
                 // Position following and orientation are independent. Copying the
                 // current camera preserves the user's zoom and browsing center.
                 camera.heading = targetHeading
                 camera.pitch = 0
-                mapView.setCamera(camera, animated: false)
+                canvas.setHomeCamera(camera, animated: false)
                 lastFollowCoordinate = canFollow ? coordinate : nil
             }
             if !canFollow { lastFollowCoordinate = nil }
@@ -385,6 +392,49 @@ struct FogMapView: UIViewRepresentable {
                   let id = destination.id else { return }
             onDestinationSelection?(id)
             mapView.deselectAnnotation(annotation, animated: false)
+        }
+    }
+}
+
+final class FogMapCanvas: UIView {
+    let mapView = MKMapView(frame: .zero)
+    private var hasCompletedLayout = false
+    private var pendingHomeCamera: MKMapCamera?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addSubview(mapView)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        addSubview(mapView)
+    }
+
+    var homeCameraSnapshot: MKMapCamera {
+        (pendingHomeCamera ?? mapView.camera).copy() as! MKMapCamera
+    }
+
+    func setHomeCamera(_ camera: MKMapCamera, animated: Bool) {
+        guard hasCompletedLayout, !bounds.isEmpty else {
+            pendingHomeCamera = camera.copy() as? MKMapCamera
+            return
+        }
+        pendingHomeCamera = nil
+        mapView.setCamera(camera, animated: animated)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard !bounds.isEmpty else { return }
+        mapView.frame = bounds
+        mapView.layoutIfNeeded()
+        hasCompletedLayout = true
+        // MapKit clamps cameras applied at zero size to its minimum distance.
+        // Apply the latest requested home camera once actual geometry exists.
+        if let pendingHomeCamera {
+            self.pendingHomeCamera = nil
+            mapView.setCamera(pendingHomeCamera, animated: false)
         }
     }
 }
