@@ -4,28 +4,24 @@ import CoreLocation
 
 @MainActor
 final class HomeMapLocationTests: XCTestCase {
-    func testRecenterWaitsForFixAfterTapAndConvertsMapCoordinateOnce() throws {
+    func testRecenterImmediatelyUsesDisplayedFixWithoutRestartingGPS() {
         let manager = MapSensorStub()
         let sut = HomeMapLocation(manager: manager)
         sut.setActive(true)
         defer { sut.setActive(false) }
-        sut.requestRecenter()
-        let requested = try XCTUnwrap(sut.requestedAt)
-        sut.locationManager(manager, didUpdateLocations: [fix(at: requested.addingTimeInterval(-10))])
-        XCTAssertTrue(sut.isLocating)
-        XCTAssertEqual(sut.recenterRequestID, 0)
-        XCTAssertNil(sut.recenterCoordinate)
-        sut.locationManager(manager, didUpdateLocations: [fix(at: requested)])
-        XCTAssertFalse(sut.isLocating)
-        XCTAssertTrue(sut.isFollowing)
-        XCTAssertEqual(sut.recenterRequestID, 1)
-        XCTAssertEqual(sut.recenterCoordinate, ChinaCoordinateTransform.mapCoordinate(for:
+        sut.locationManager(manager, didUpdateLocations: [fix(at: Date().addingTimeInterval(-10))])
+        let displayed = sut.coordinate
+        let starts = manager.locationStarts
+        sut.pauseFollowing()
+        for request in 1...2 {
+            sut.requestRecenter()
+            XCTAssertEqual(sut.recenterRequestID, request)
+            XCTAssertEqual(sut.recenterCoordinate, displayed)
+            XCTAssertTrue(sut.isFollowing)
+        }
+        XCTAssertEqual(manager.locationStarts, starts)
+        XCTAssertEqual(displayed, ChinaCoordinateTransform.mapCoordinate(for:
             GeoCoordinate(latitude: 31.23, longitude: 121.47)))
-        sut.requestRecenter()
-        XCTAssertNil(sut.recenterCoordinate)
-        XCTAssertFalse(sut.isFollowing)
-        sut.locationManager(manager, didUpdateLocations: [fix(at: Date())])
-        XCTAssertEqual(sut.recenterRequestID, 2)
     }
 
     func testInvalidOldAndOutOfOrderFixesCannotCompleteOrMoveRecenter() throws {
@@ -34,12 +30,12 @@ final class HomeMapLocationTests: XCTestCase {
         sut.setActive(true)
         defer { sut.setActive(false) }
         sut.requestRecenter()
-        let requested = try XCTUnwrap(sut.requestedAt)
+        let requested = Date()
         sut.locationManager(manager, didUpdateLocations: [fix(at: requested, accuracy: -1),
             fix(at: requested, accuracy: 500), fix(at: requested.addingTimeInterval(-60)),
             fix(at: requested.addingTimeInterval(60))])
         XCTAssertNil(sut.coordinate)
-        XCTAssertTrue(sut.isLocating)
+        XCTAssertEqual(sut.recenterRequestID, 0)
         sut.locationManager(manager, didUpdateLocations: [fix(at: requested)])
         let coordinate = sut.coordinate
         sut.locationManager(manager, didUpdateLocations: [fix(at: requested.addingTimeInterval(-1), latitude: 32)])
@@ -56,13 +52,12 @@ final class HomeMapLocationTests: XCTestCase {
         sut.setActive(false)
         XCTAssertEqual(manager.locationStops, 1)
         XCTAssertEqual(manager.headingStops, 1)
-        XCTAssertFalse(sut.isLocating)
         sut.locationManager(manager, didUpdateLocations: [fix(at: Date())])
         XCTAssertNil(sut.coordinate)
         XCTAssertEqual(sut.recenterRequestID, 0)
     }
 
-    func testDeniedPermissionAndCancelledGestureDoNotLeavePendingRecenter() {
+    func testMissingPositionAndDeniedPermissionDoNotQueueDelayedRecenter() {
         let manager = MapSensorStub()
         let sut = HomeMapLocation(manager: manager)
         sut.setActive(true)
@@ -75,7 +70,6 @@ final class HomeMapLocationTests: XCTestCase {
         manager.permission = .denied
         sut.locationManagerDidChangeAuthorization(manager)
         sut.requestRecenter()
-        XCTAssertFalse(sut.isLocating)
         XCTAssertNil(sut.coordinate)
         XCTAssertNotNil(sut.message)
     }
@@ -87,9 +81,17 @@ final class HomeMapLocationTests: XCTestCase {
         let sut = HomeMapLocation(manager: MapSensorStub(), preferences: preferences)
         sut.setActive(true)
         defer { sut.setActive(false) }
-        sut.selectOrientation(.phoneHeading)
+        sut.pauseFollowing()
+        let starts = (sut.isFollowing, sut.recenterRequestID)
+        sut.toggleOrientation()
+        XCTAssertEqual(sut.orientation, .phoneHeading)
+        XCTAssertEqual(sut.isFollowing, starts.0)
+        XCTAssertEqual(sut.recenterRequestID, starts.1)
         let restored = HomeMapLocation(manager: MapSensorStub(), preferences: preferences)
         XCTAssertEqual(restored.orientation, .phoneHeading)
+        sut.toggleOrientation()
+        XCTAssertEqual(sut.orientation, .northUp)
+        XCTAssertEqual(sut.recenterRequestID, 0)
         XCTAssertEqual(HomeMapLocation.validHeading(trueHeading: 0, magneticHeading: 12, accuracy: 5), 0)
         XCTAssertEqual(HomeMapLocation.validHeading(trueHeading: -1, magneticHeading: 359, accuracy: 5), 359)
         XCTAssertNil(HomeMapLocation.validHeading(trueHeading: 12, magneticHeading: 10, accuracy: -1))
@@ -105,10 +107,11 @@ final class HomeMapLocationTests: XCTestCase {
 
 private final class MapSensorStub: CLLocationManager {
     var permission: CLAuthorizationStatus = .authorizedWhenInUse
+    var locationStarts = 0
     var locationStops = 0
     var headingStops = 0
     override var authorizationStatus: CLAuthorizationStatus { permission }
-    override func startUpdatingLocation() {}
+    override func startUpdatingLocation() { locationStarts += 1 }
     override func startUpdatingHeading() {}
     override func stopUpdatingLocation() { locationStops += 1 }
     override func stopUpdatingHeading() { headingStops += 1 }

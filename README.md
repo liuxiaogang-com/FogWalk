@@ -2,7 +2,7 @@
 
 在 Windows 新开项目和会话继续开发，请先阅读 [新会话接续说明.md](新会话接续说明.md)。
 
-V0.3.3 新增首页北方/手机朝向切换、当前位置方向箭头，并修复定位按钮等待最新 GPS 后居中与回正，见 [HOME_MAP_ORIENTATION.md](HOME_MAP_ORIENTATION.md)。
+V0.3.4 支持首页一键切换北方/手机朝向，缩放拖动后继续方向跟随；定位按钮按当前箭头立即居中并保留缩放，见 [HOME_MAP_ORIENTATION.md](HOME_MAP_ORIENTATION.md)。
 
 一个使用 SwiftUI、MapKit 和 Core Location 制作的原生 iPhone 应用。它导入“一生足迹”导出的照片位置 CSV、轨迹 CSV 与 GPX，在 Apple 地图上显示可信轨迹，并用迷雾表现已探索和未探索区域。
 

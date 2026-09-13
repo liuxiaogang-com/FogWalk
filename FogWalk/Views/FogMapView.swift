@@ -32,7 +32,6 @@ struct FogMapView: UIViewRepresentable {
     var orientation: MapOrientation?
     var deviceHeading: Double?
     var followsCurrentLocation = false
-    var isRecenterPending = false
     var onUserMovedMap: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -91,15 +90,18 @@ struct FogMapView: UIViewRepresentable {
             context.coordinator.hasUserMovedMap = false
             let distance = CLLocation(latitude: mapView.centerCoordinate.latitude, longitude: mapView.centerCoordinate.longitude)
                 .distance(from: recenterCoordinate.location)
-            mapView.setCamera(
-                MKMapCamera(lookingAtCenter: recenterCoordinate.clCoordinate,
-                            fromDistance: recenterSpanMeters, pitch: 0,
-                            heading: orientation == .phoneHeading ? (deviceHeading ?? 0) : 0),
+            let camera = orientation == nil
+                ? MKMapCamera(lookingAtCenter: recenterCoordinate.clCoordinate, fromDistance: recenterSpanMeters, pitch: 0, heading: 0)
+                : mapView.camera.copy() as! MKMapCamera
+            camera.centerCoordinate = recenterCoordinate.clCoordinate
+            camera.heading = orientation == .phoneHeading ? (deviceHeading ?? mapView.camera.heading) : 0
+            camera.pitch = 0
+            mapView.setCamera(camera,
                 animated: orientation == nil && distance < 10_000 && mapView.region.span.latitudeDelta < 0.2
             )
         }
 
-        if centersOnCurrentCoordinate, !isRecenterPending,
+        if centersOnCurrentCoordinate,
            let liveCurrentCoordinate,
            !context.coordinator.hasAppliedLiveCenter,
            !context.coordinator.hasUserMovedMap {
@@ -209,7 +211,7 @@ struct FogMapView: UIViewRepresentable {
             }
         }
 
-        if !context.coordinator.hasPositionedMap, !isRecenterPending,
+        if !context.coordinator.hasPositionedMap,
            let coordinate = currentCoordinate ?? presentation.latestCoordinate {
             context.coordinator.hasPositionedMap = true
             if centersOnCurrentCoordinate {
@@ -264,7 +266,6 @@ struct FogMapView: UIViewRepresentable {
         var liveAnnotation: HomeLocationAnnotation?
         private var lastOrientation: MapOrientation?
         private var lastFollowCoordinate: GeoCoordinate?
-        private var lastFollowHeading: Double?
 
         func updateHomeLocation(on mapView: MKMapView, coordinate: GeoCoordinate?) {
             if let coordinate {
@@ -290,17 +291,18 @@ struct FogMapView: UIViewRepresentable {
             lastOrientation = orientation
             let targetHeading = orientation == .northUp ? 0 : (deviceHeading ?? mapView.camera.heading)
             let canFollow = follows && !hasUserMovedMap && coordinate != nil
-            if orientationChanged || (canFollow && (lastFollowCoordinate != coordinate || lastFollowHeading != targetHeading)) {
+            let headingChanged = abs(mapView.camera.heading - targetHeading) > 0.1
+            if orientationChanged || headingChanged || (canFollow && lastFollowCoordinate != coordinate) {
                 let camera = mapView.camera.copy() as! MKMapCamera
                 if canFollow, let coordinate { camera.centerCoordinate = coordinate.clCoordinate }
-                // When browsing freely, sensor updates must not pull the map away from the user's gesture.
-                if orientationChanged || canFollow { camera.heading = targetHeading }
+                // Position following and orientation are independent. Copying the
+                // current camera preserves the user's zoom and browsing center.
+                camera.heading = targetHeading
                 camera.pitch = 0
                 mapView.setCamera(camera, animated: false)
                 lastFollowCoordinate = canFollow ? coordinate : nil
-                lastFollowHeading = canFollow ? targetHeading : nil
             }
-            if !canFollow { lastFollowCoordinate = nil; lastFollowHeading = nil }
+            if !canFollow { lastFollowCoordinate = nil }
             updateHeadingArrow(on: mapView)
         }
 

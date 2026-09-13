@@ -83,7 +83,6 @@ struct ContentView: View {
                 orientation: model.homeMapLocation.orientation,
                 deviceHeading: model.homeMapLocation.heading,
                 followsCurrentLocation: model.homeMapLocation.isFollowing,
-                isRecenterPending: model.homeMapLocation.isLocating,
                 onUserMovedMap: { model.homeMapLocation.pauseFollowing() }
             )
             .ignoresSafeArea()
@@ -214,42 +213,30 @@ struct ContentView: View {
     private var mapControls: some View {
         HStack(spacing: 7) {
             controlButton(icon: "square.3.layers.3d", label: "图层", isActive: false) { isLayersPresented = true }
-            Menu {
-                ForEach(MapOrientation.allCases) { orientation in
-                    Button {
-                        model.homeMapLocation.selectOrientation(orientation)
-                    } label: {
-                        Label(orientation.title, systemImage: model.homeMapLocation.orientation == orientation ? "checkmark" : orientation.icon)
-                    }
-                }
-            } label: {
-                Label(model.homeMapLocation.orientation.title, systemImage: model.homeMapLocation.orientation.icon)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(model.homeMapLocation.isFollowing ? .orange : .primary)
-                    .padding(.horizontal, 10).frame(height: 44)
-                    .background(.ultraThinMaterial, in: Capsule())
+            controlButton(icon: model.homeMapLocation.orientation.icon,
+                          label: model.homeMapLocation.orientation.title,
+                          isActive: model.homeMapLocation.orientation == .phoneHeading) {
+                model.homeMapLocation.toggleOrientation()
             }
             .accessibilityLabel("地图朝向")
             .accessibilityValue(model.homeMapLocation.orientation.title)
-            controlButton(icon: "location.fill", label: model.homeMapLocation.isLocating ? "定位中" : "定位",
-                          isActive: model.homeMapLocation.isFollowing || model.homeMapLocation.isLocating) {
+            .accessibilityHint("点击切换北方朝上或手机朝向")
+            controlButton(icon: "location.fill", label: "定位", isActive: model.homeMapLocation.isFollowing) {
                 model.recenterMainMap()
             }
-            .disabled(model.homeMapLocation.isLocating)
         }
         .sensoryFeedback(.selection, trigger: model.homeMapLocation.orientation)
-        .sensoryFeedback(.selection, trigger: model.homeMapLocation.isLocating)
+        .sensoryFeedback(.selection, trigger: model.homeMapLocation.recenterRequestID)
     }
 
     private func updateMapSensors() {
-        // Permission prompts make the scene inactive; keep the pending request until
-        // the app actually backgrounds or leaves the home map.
+        // Permission prompts make the scene inactive; keep foreground sensors
+        // available until the app actually backgrounds or leaves the home map.
         model.homeMapLocation.setActive(scenePhase != .background && !model.isExploreSheetPresented)
     }
 
     private var mapStatusMessage: String? {
         let location = model.homeMapLocation
-        if location.isLocating { return "正在获取最新位置…" }
         if let message = location.message { return message }
         if location.coordinate == nil {
             return model.hasData ? "暂以最近足迹为参考位置，点击定位更新" : "点击定位即可探索，无需先导入"

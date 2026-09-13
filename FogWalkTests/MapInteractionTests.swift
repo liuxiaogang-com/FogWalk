@@ -59,7 +59,7 @@ final class MapInteractionTests: XCTestCase {
         }
     }
 
-    func testHomeHeadingArrowFollowGesturePauseAndNorthReset() async throws {
+    func testHomeHeadingContinuesAfterZoomAndPanAndRecenterPreservesScale() async throws {
         let state = MapHarnessState()
         state.orientation = .phoneHeading
         state.heading = 90
@@ -99,36 +99,39 @@ final class MapInteractionTests: XCTestCase {
         let coordinator = try XCTUnwrap(map.delegate as? FogMapView.Coordinator)
         coordinator.hasUserMovedMap = true
         let browsingCenter = GeoCoordinate(latitude: 31.2305, longitude: 121.4705)
-        map.setCenter(browsingCenter.clCoordinate, animated: false)
+        let zoomed = map.camera.copy() as! MKMapCamera
+        zoomed.centerCoordinate = browsingCenter.clCoordinate
+        zoomed.centerCoordinateDistance *= 0.7
+        map.setCamera(zoomed, animated: false)
+        let zoomDistance = map.camera.centerCoordinateDistance
+        state.follows = false
         state.heading = 270
         state.live = state.start
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
-        XCTAssertEqual(map.camera.heading, 180, accuracy: 0.1)
+        XCTAssertEqual(map.camera.heading, 270, accuracy: 0.1)
+        XCTAssertEqual(map.camera.centerCoordinateDistance, zoomDistance, accuracy: 1)
         let visibleArrow = try XCTUnwrap(map.view(for: annotation) as? HomeLocationAnnotationView)
-        XCTAssertEqual(atan2(visibleArrow.directionImageView.transform.b, visibleArrow.directionImageView.transform.a), .pi / 2, accuracy: 0.01)
+        XCTAssertEqual(atan2(visibleArrow.directionImageView.transform.b, visibleArrow.directionImageView.transform.a), 0, accuracy: 0.01)
 
         state.orientation = .northUp
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(map.camera.heading, 0, accuracy: 0.1)
+        XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
+        XCTAssertEqual(map.camera.centerCoordinateDistance, zoomDistance, accuracy: 1)
+        state.heading = 45
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(map.camera.heading, 0, accuracy: 0.1)
         state.recenter += 1
+        state.follows = true
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(map.centerCoordinate.latitude, state.start.latitude, accuracy: 0.0001)
         XCTAssertEqual(map.camera.heading, 0, accuracy: 0.1)
-        XCTAssertLessThan(map.region.span.latitudeDelta, 0.1)
+        XCTAssertEqual(map.camera.centerCoordinateDistance, zoomDistance, accuracy: 1)
         XCTAssertFalse(coordinator.hasUserMovedMap)
         state.live = nil
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertFalse(map.annotations.contains(where: { $0 is HomeLocationAnnotation }))
-
-        // A first cached fix arriving while a fresh fix is requested must not
-        // take the initial-auto-center path around the request's freshness gate.
-        state.follows = false
-        state.pending = true
-        coordinator.hasAppliedLiveCenter = false
-        coordinator.hasPositionedMap = false
-        map.setCenter(browsingCenter.clCoordinate, animated: false)
-        state.live = state.start
-        try await Task.sleep(for: .milliseconds(400))
-        XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
     }
 
     private func findMap(_ view: UIView) -> MKMapView? {
@@ -162,7 +165,6 @@ private final class MapHarnessState: ObservableObject {
     @Published var heading: Double?
     @Published var live: GeoCoordinate?
     @Published var follows = false
-    @Published var pending = false
     init() { selected = firstID }
 }
 
@@ -178,7 +180,6 @@ private struct MapHarness: View {
                                  ExploreMapDestination(id: state.secondID, coordinate: state.second, rank: 2)],
             selectedDestinationID: state.selected, onDestinationSelection: { state.selected = $0 },
             orientation: state.orientation, deviceHeading: state.heading, followsCurrentLocation: state.follows,
-            isRecenterPending: state.pending,
             onUserMovedMap: { state.follows = false })
     }
 }

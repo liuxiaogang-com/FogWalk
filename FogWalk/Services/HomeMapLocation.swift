@@ -18,14 +18,11 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var heading: Double?
     @Published private(set) var orientation: MapOrientation
     @Published private(set) var isFollowing = true
-    @Published private(set) var isLocating = false
     @Published private(set) var message: String?
     @Published private(set) var recenterCoordinate: GeoCoordinate?
     @Published private(set) var recenterRequestID = 0
     private(set) var isActive = false
-    private(set) var requestedAt: Date?
     private var coordinateDate: Date?
-    private var timeoutTask: Task<Void, Never>?
     private var freshnessTask: Task<Void, Never>?
     private let manager: CLLocationManager
     private let preferences: UserDefaults
@@ -62,56 +59,40 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
             manager.stopUpdatingHeading()
             freshnessTask?.cancel()
             freshnessTask = nil
-            cancelRecenter()
             recenterCoordinate = nil
             coordinate = nil
         }
     }
 
-    func selectOrientation(_ value: MapOrientation) {
-        orientation = value
-        preferences.set(value.rawValue, forKey: "home-map-orientation-v1")
-        requestRecenter()
+    func toggleOrientation() {
+        orientation = orientation == .northUp ? .phoneHeading : .northUp
+        preferences.set(orientation.rawValue, forKey: "home-map-orientation-v1")
     }
 
     func requestRecenter() {
-        cancelRecenter()
-        isFollowing = false
-        message = nil
-        recenterCoordinate = nil
-        requestedAt = Date()
-        isLocating = true
+        // Center the exact location already displayed by the arrow. GPS keeps
+        // updating independently; a camera action must not wait for another fix.
+        if let coordinate {
+            recenterCoordinate = coordinate
+            recenterRequestID &+= 1
+            isFollowing = true
+            message = nil
+            return
+        }
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
+            message = "请允许定位，当前位置出现后即可居中。"
         case .authorizedAlways, .authorizedWhenInUse:
-            startAuthorizedSensors()
+            message = "尚未获得当前位置，位置出现后再点定位即可居中。"
         default:
-            failRecenter("定位权限未开启，请在系统设置中允许位置访问。")
-            return
-        }
-        timeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(20))
-            guard !Task.isCancelled else { return }
-            self?.failRecenter("暂未获得新的精准定位，请到开阔处再次点击定位。")
+            message = "定位权限未开启，请在系统设置中允许位置访问。"
         }
     }
 
+    /// Gestures pause position following only; compass orientation stays active.
     func pauseFollowing() {
         isFollowing = false
-        cancelRecenter()
-    }
-
-    private func cancelRecenter() {
-        timeoutTask?.cancel()
-        timeoutTask = nil
-        requestedAt = nil
-        isLocating = false
-    }
-
-    private func failRecenter(_ text: String) {
-        cancelRecenter()
-        message = text
     }
 
     private func startAuthorizedSensors() {
@@ -138,7 +119,8 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
             coordinateDate = nil
             heading = nil
             isFollowing = false
-            failRecenter("定位权限未开启，请在系统设置中允许位置访问。")
+            recenterCoordinate = nil
+            message = "定位权限未开启，请在系统设置中允许位置访问。"
         default: break
         }
     }
@@ -156,13 +138,6 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
                 GeoCoordinate(latitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude))
             coordinateDate = fix.timestamp
             message = nil
-            // A cached fix from before the tap must never complete this request.
-            if let requestedAt, fix.timestamp >= requestedAt {
-                recenterCoordinate = coordinate
-                recenterRequestID &+= 1
-                isFollowing = true
-                cancelRecenter()
-            }
         }
     }
 
@@ -185,7 +160,7 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
         if (error as? CLError)?.code == .locationUnknown {
             message = "正在等待有效 GPS 信号…"
         } else {
-            failRecenter("无法获取当前位置：\(error.localizedDescription)")
+            message = "无法获取当前位置：\(error.localizedDescription)"
         }
     }
 }
