@@ -11,7 +11,7 @@ import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("directory", type=Path)
-parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "liuxiaogang-com/Citywalk"))
+parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "liuxiaogang-com/FogWalk"))
 parser.add_argument("--dry-run", action="store_true")
 args = parser.parse_args()
 
