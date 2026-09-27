@@ -1,105 +1,59 @@
-# 迷雾足迹
+# 迷雾足迹 · FogWalk
 
-在 Windows 新开项目和会话继续开发，请先阅读 [新会话接续说明.md](新会话接续说明.md)。
+**有时候，出门只差一个理由。**
 
-V0.3.4 支持首页一键切换北方/手机朝向，缩放拖动后继续方向跟随；定位按钮按当前箭头立即居中并保留缩放，见 [HOME_MAP_ORIENTATION.md](HOME_MAP_ORIENTATION.md)。
+把熟悉的城市变成一张等待探索的地图：走过的路逐渐点亮，没去过的地方留在迷雾里。不知道去哪，就发现一个新目的地；心里已有方向，就边走边探索；收藏了喜欢的路线，也可以导入路书跟着走。
 
-一个使用 SwiftUI、MapKit 和 Core Location 制作的原生 iPhone 应用。它导入“一生足迹”导出的照片位置 CSV、轨迹 CSV 与 GPX，在 Apple 地图上显示可信轨迹，并用迷雾表现已探索和未探索区域。
+## 你可以用它做什么
 
-当前功能核对、修正和验证边界以 [FUNCTIONAL_AUDIT.md](FUNCTIONAL_AUDIT.md) 为准，早期方案保留为历史记录。
+- **用足迹点亮城市**：记录步行、骑行等出行轨迹，逐步揭开沿途迷雾，按今日、七日、本月或一生回顾走过的路。支持正常 / 省电记录模式。
+- **发现还没去过的地方**：选择出行方式、单程时间和地点类型，寻找公园、咖啡厅等未探索目的地，推荐时也考虑沿途未知区域。可预览道路路线，再使用高德或 Apple 地图导航。
+- **有目的地，也有自由探索的空间**：在首页搜索地点，查看目标方位和路线参考，沿途自己决定怎么走。目标移出屏幕后仍有方向与直线距离提示；这里提供的是方向指引，不是逐路口导航。地图还可跟随手机朝向，方便对照眼前的路。
+- **把收藏的路书走一遍**：导入行者等工具导出的 GPX 路书，预览全程并沿路径导航，查看剩余距离，接收转弯语音与偏离提醒。环线路书支持自选入口，到达后沿原路线顺序绕行一圈。转弯提示按 GPX 路径形状推算，不含道路通行校验。
+- **让旧足迹接上新旅程**：导入“一生足迹”导出的轨迹 CSV、照片位置 CSV 和 GPX 历史轨迹，使用 `.fogwalk` 备份与恢复足迹。路书单独保存，导入待走路线不会提前点亮迷雾。
 
-V0.3.2 新增高德 / Apple 地图导航选择，默认高德并记忆选择；具体规则及验证见 [NAVIGATION.md](NAVIGATION.md)。
+足迹数据保存在本机，安装包不包含个人数据；地点搜索和道路路线规划需要网络。
 
-独立模拟器的系统级定位回放（非手动调用定位回调）见 [SIMULATED_LOCATION_TEST.md](SIMULATED_LOCATION_TEST.md)，用于外出前检查前后台落盘与重启恢复，不替代真机锁屏和耗电测试。
+## 最低要求与下载
 
-完整、已确认的需求与技术规则见 [PRODUCT_SPEC.md](PRODUCT_SPEC.md)。
+| 用途 | 要求 / 下载 |
+| --- | --- |
+| 运行 App | iPhone，**iOS 26.0 或更高版本** |
+| 下载 App | [GitHub Releases](https://github.com/liuxiaogang-com/FogWalk/releases)：展开 Assets，下载 `.ipa` 文件 |
+| 签名安装 | [Sideloadly](https://sideloadly.io/)（Windows / macOS）及自己的 Apple 账号 |
+| 从源码开发 | macOS、[Xcode 26 或更高版本](https://developer.apple.com/xcode/)，包含 iOS 26 SDK；macOS 版本须满足所选 Xcode 的要求 |
 
-GitHub Actions 自动构建未签名 iPhone IPA，以及在 Windows 上重新签名安装的步骤，见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)。构建耗时、失败排查与已实测的快速打包模式见 [CI_BUILD_NOTES.md](CI_BUILD_NOTES.md)。
+Releases 提供的是**未签名 IPA**，不能直接在手机上点击安装，需要按以下步骤签名。仅安装 App 无需 Xcode。
 
-V0.2 第一轮的范围、接续清单与验收结果见 [V02_PLAN.md](V02_PLAN.md)。V0.1 本地代码基线为 `039c12b` / `v0.1-baseline`，当时尚无远程仓库；现在已关联 GitHub 私有仓库并自动发布 Releases，个人数据仍不入 Git。
+## 安装（Windows / macOS）
 
-V0.2.1 已加入大数据快速启动缓存，方案、性能实测及手机安装状态见 [STARTUP_PERFORMANCE.md](STARTUP_PERFORMANCE.md)。
+1. 下载 IPA 和对应系统的 Sideloadly。Windows 按官网指引安装桌面版 iTunes、iCloud 等依赖；现代 macOS 通过 Finder 管理设备。
+2. 用 USB 连接并解锁 iPhone，在手机上选择“信任此电脑”。
+3. 打开 Sideloadly，选择 **iPhone**，拖入 IPA，填写自己的 Apple 账号，点击 **Start**，按提示完成认证和安装。
+4. 如提示开发者未受信任，前往 **设置 → 通用 → VPN 与设备管理**，信任对应的开发者条目。
+5. 前往 **设置 → 隐私与安全性 → 开发者模式**，开启后按提示重启，并在重启后确认开启。本项目要求 iOS 26，使用上述签名方式必须开启开发者模式才能运行；Windows 和 macOS 均相同。
+6. 打开 App，按需授予定位权限，即可开始探索或导入已有足迹。
 
-V0.3 双模式记录、后台与锁屏配置、运动判断及验证边界见 [RECORDING_PLAN.md](RECORDING_PLAN.md)。后台外出连续性和耗电仍需真机实测。
+免费 Apple 账号签名通常 **7 天有效**，到期需重新签名；也可配置 Sideloadly 自动刷新，刷新时电脑和手机需能连接。更新时保持相同 Apple 账号和应用标识，直接覆盖安装；更换签名账号或卸载前，请先导出 `.fogwalk` 备份。
 
-## 当前已实现
+参考：[Sideloadly FAQ](https://sideloadly.io/faq) · [Apple 开发者模式说明](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
 
-- 原生 iOS 26 SwiftUI 工程；
-- 空库启动，App 安装包不内置任何个人 CSV、GPX 或足迹档案；
-- 从系统“文件”选择器一次选择一个或多个轨迹 CSV、照片位置 CSV、GPX 或 `.fogwalk` 备份；
-- 150,664 条轨迹 CSV、150,664 条 GPX 和 3,519 条照片位置 CSV 的完整解析验证；
-- 按时间戳和约 10 米坐标精度去重，得到 154,183 个唯一位置；
-- 导入后写入 App 的 Application Support 二进制档案，后续启动直接恢复，无需再次解析 CSV/GPX；
-- 地图先显示，后续启动从校验过的紧凑缓存恢复迷雾/探索网格/四种日期轨迹；完整原档案仅在导入合并或导出时按需读取，缓存失效会自动重建；
-- 从右上角数据菜单导出单个 `.fogwalk` 备份文件，可再次导入或用于换机；
-- 5 分钟 / 300 米 / 100 米定位精度 / 65 m/s 推算速度的可信连接规则；
-- 今日、七日、本月、一生筛选和可信距离统计；
-- MapKit 自定义迷雾：0–50 米清晰、50–100 米渐变、外部暗雾；
-- 中国大陆 WGS-84 到 Apple 地图坐标的显示边界校准，原始导入和导出数据保持不变；
-- 单独的橙色轨迹覆盖层；
-- 正常/省电两种出行记录模式；位置位移判断，以及用户主动开启的可选运动辅助；后台定位配置和 SQLite WAL 增量保存；支持原备份与新记录合并导出；
-- 地图主体首页、紧凑状态与带文字的迷雾 / 轨迹 / 定位控制，“去探索”作为底部主操作；
-- 全屏目的地探索地图，顶部紧凑条件、底部横向卡片、独立目的地详情，先在本 App 的迷雾中查看路线；
-- 探索页默认以当前定位为中心显示约 3 公里的局部地图，GPS 暂不可用时使用最近导入位置；
-- 默认开启迷雾并关闭历史轨迹线，仍可从首页手动切换；
-- 首页定位按钮会回到实时位置，并恢复约 3 公里的固定缩放；
-- 咖啡厅和餐饮使用结构化 POI、中文品类词与常见品牌词组合检索，仍优先选择未探索终点；
-- 搜索结果最多显示 6 个地图标记；底部卡片横向滑动并露出下一项，滑卡或点击标记都会同步切换目的地与路线；
-- 搜索条件本地记忆、取消和请求代次校验、换一批排重；咖啡与茶饮分开，独立咖啡馆不因非品牌而降权；
-- 推荐必须取得真实道路路线并满足单程 ETA 预算；无可用路线时明确报错和重试，不推荐直线估算结果；
-- 手动选点先在 App 内预览路线；详情可选择高德 / Apple 地图导航，外部地图按当前位置重新规划；
-- 首页图层与回顾面板、累计迷雾与日期轨迹分离；空库允许定位后直接探索；
-- 独立的地图选点模式：长按落点、解析地址、显示探索状态和直线距离，再决定是否导航；
-- 25 米栅格表达 50 米探索半径，可信轨迹段插值；已探索终点硬性排除；
-- MapKit 结构化 POI 与中文自然语言搜索兜底、明确命名终点、路线与真实 ETA；
-- 按沿途未知、终点周边未知和时间预算综合排序，最终可打开高德或 Apple 地图导航；
-- XCTest 数据、阈值、可见几何、记录持久化和地图交互测试。
+## 开发
 
-## 本地运行
+项目使用 SwiftUI、MapKit 和 Core Location 构建。
 
-打开：
+1. 克隆本仓库，用 Xcode 打开 `FogWalk.xcodeproj`。
+2. 选择 `FogWalk` Scheme 和已安装的 iOS 26 或更高版本模拟器，点击 Run；执行测试使用 **Product → Test**。
+3. 真机调试时，在 **Signing & Capabilities** 中选择自己的开发团队，并在 iPhone 上开启开发者模式。
 
-```text
-FogWalk.xcodeproj
-```
-
-选择 `FogWalk` Scheme 和 iOS 26 模拟器运行。首次启动为空库，通过首页“导入备份”或右上角菜单导入数据。
-
-命令行构建：
+在 macOS 仓库根目录打包未签名 IPA：
 
 ```sh
-xcodebuild -project FogWalk.xcodeproj -scheme FogWalk \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
-  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build
+bash scripts/ci-build-unsigned.sh
 ```
 
-命令行测试：
+产物位于 `.build/unsigned/`。Windows 可编辑源码，编译需使用 macOS + Xcode，或通过 [GitHub Actions](https://github.com/liuxiaogang-com/FogWalk/actions/workflows/ios-unsigned.yml) 构建。测试通过不代表后台定位连续性或耗电已完成真机验证。
 
-```sh
-xcodebuild test -project FogWalk.xcodeproj -scheme FogWalk \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' \
-  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO
-```
+### 版本管理
 
-## 当前边界
-
-- 当前产品仅提供目的地探索，没有闭环入口和假环线。全路网解析与闭环规划不在当前版本内。
-- 目的地模式已调用 MapKit 搜索和路线服务，但结果依赖网络和当地 Apple 地图数据。
-- 导入数据使用二进制档案与衍生缓存；设备新增记录使用 SQLite WAL。跨日刷新日期筛选；不涉及当前日期范围的旧档案仍复用累计迷雾缓存。
-- 真机前台定位和保存已验证；后台外出、锁屏连续性、运动辅助开关的电量差异尚待对照测试。
-- App 已完成开发签名，并安装启动于用户的 iPhone 16 Pro；状态见 `PRODUCT_SPEC.md` 的最新实现记录。
-
-## 视觉验收截图
-
-- `artifacts/fogwalk-home-corridor.png`：首页、迷雾通道和真实轨迹。
-- `artifacts/fogwalk-explore-sheet.png`：探索参数面板。
-- `artifacts/fogwalk-empty-import.png`：不携带个人数据的空库导入首页。
-- `artifacts/fogwalk-dark-fog-v3.png`：坐标校准后的深色地图与连续羽化迷雾。
-- `artifacts/main-redesign.png`：以地图和“去探索”为核心的新首页。
-- `artifacts/explore-redesign-options.png`：完整二级探索地图与可收起参数面板。
-- `artifacts/explore-manual-selection.png`：不挤占推荐卡的长按地图选点模式。
-- `artifacts/explore-minimal-options.png`：精简为三项下拉条件与单一主操作的探索面板。
-- `artifacts/explore-current-center-fog-only.png`：当前位置局部视野与默认仅迷雾状态。
-- `artifacts/explore-place-map-layout.png`：条件置顶与地点地图式结果入口布局。
-
-V0.2 视觉检查使用 `--ui-fixture` 启动参数和合成地点，代码仅编译进 Debug 模拟器，不进入真机或 Release 包，也不读取或修改个人足迹。验收图统一以 `artifacts/v02-` 开头。
+发版前运行 `python3 scripts/ci-version.py patch`（修复）、`minor`（新功能）或 `major`（重大版本）；Windows 使用已安装的 Python 3 执行同一脚本。脚本统一更新工程版本和本地构建号，`check` 可检查当前值。同一版本的重复构建保留版本号，由 CI / 虚拟机打包流程分别递增构建号；IPA 文件名与 Release 标题自动读取实际包内版本。变更记录见 [CHANGELOG.md](CHANGELOG.md)。

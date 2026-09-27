@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UIKit
+@preconcurrency import MapKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -26,6 +27,13 @@ final class AppModel: ObservableObject {
     @Published var exploreErrorMessage: String?
     @Published var selectedRecommendationID: UUID?
     @Published var exploreBatchNotice: String?
+    @Published private(set) var placeSearchResults: [PlaceSearchResult] = []
+    @Published private(set) var isSearchingPlaces = false
+    @Published private(set) var placeSearchMessage: String?
+    @Published private(set) var homeDestination: ExploreRecommendation?
+    @Published private(set) var isPlanningHomeRoute = false
+    @Published private(set) var homeDestinationRouteMessage: String?
+    @Published var homeDestinationOverviewRequestID = 0
     @Published var exploreOptions: ExploreOptions {
         didSet {
             guard oldValue != exploreOptions else { return }
@@ -48,6 +56,11 @@ final class AppModel: ObservableObject {
     private let preferences: UserDefaults
     private var searchTask: Task<Void, Never>?
     private var searchGeneration = SearchGeneration()
+    private var placeSearchTask: Task<Void, Never>?
+    private var placeSearchGeneration = SearchGeneration()
+    private var homeRouteTask: Task<Void, Never>?
+    private var homeRouteGeneration = SearchGeneration()
+    private var homeDestinationMapItem: MKMapItem?
     private var seenDestinationKeys = Set<String>()
     private var cachedPresentations: [TrackTimeFilter: TrackPresentation] = [:]
     private var baseGrid: ExplorationGrid?
@@ -75,7 +88,8 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
         locationManager.onSavedPoints = { [weak self] in
             guard let self else { return }
-            self.scheduleRecordingRefresh(immediately: !self.hasData || !self.locationManager.wantsRecording)
+            self.scheduleRecordingRefresh(immediately: !self.hasData ||
+                (!self.locationManager.wantsRecording && self.locationManager.navigationRecordingID == nil))
         }
     }
 
@@ -99,6 +113,135 @@ final class AppModel: ObservableObject {
 
     func recenterMainMap() {
         homeMapLocation.requestRecenter()
+    }
+
+    func searchPlaces(_ query: String) {
+        cancelPlaceSearch(clearResults: true)
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            placeSearchMessage = PlaceSearchError.emptyQuery.localizedDescription
+            return
+        }
+        let generation = placeSearchGeneration.value
+        isSearchingPlaces = true
+        placeSearchMessage = nil
+        let origin = activeCoordinate
+        placeSearchTask = Task {
+            do {
+                let results = try await ExplorePlanner().searchPlaces(query: normalized, near: origin)
+                guard !Task.isCancelled, placeSearchGeneration.accepts(generation) else { return }
+                placeSearchResults = results
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, placeSearchGeneration.accepts(generation) else { return }
+                placeSearchMessage = error.localizedDescription
+            }
+            guard placeSearchGeneration.accepts(generation) else { return }
+            isSearchingPlaces = false
+            placeSearchTask = nil
+        }
+    }
+
+    func cancelPlaceSearch(clearResults: Bool = false) {
+        _ = placeSearchGeneration.advance()
+        placeSearchTask?.cancel()
+        placeSearchTask = nil
+        isSearchingPlaces = false
+        if clearResults {
+            placeSearchResults = []
+            placeSearchMessage = nil
+        }
+    }
+
+    func selectHomeDestination(_ result: PlaceSearchResult) {
+        homeDestinationMapItem = result.mapItem
+        planHomeRoute(to: result.mapItem)
+        homeMapLocation.requestRecenter()
+    }
+
+    func refreshHomeDestinationRoute() {
+        guard let homeDestinationMapItem else { return }
+        planHomeRoute(to: homeDestinationMapItem)
+    }
+
+    func showHomeDestinationOverview() {
+        guard homeDestination != nil else { return }
+        homeMapLocation.pauseFollowing()
+        homeDestinationOverviewRequestID &+= 1
+    }
+
+    func clearHomeDestination() {
+        _ = homeRouteGeneration.advance()
+        homeRouteTask?.cancel()
+        homeRouteTask = nil
+        homeDestinationMapItem = nil
+        homeDestination = nil
+        isPlanningHomeRoute = false
+        homeDestinationRouteMessage = nil
+    }
+
+    private func planHomeRoute(to mapItem: MKMapItem) {
+        _ = homeRouteGeneration.advance()
+        homeRouteTask?.cancel()
+        let generation = homeRouteGeneration.value
+        let coordinate = GeoCoordinate(
+            latitude: mapItem.location.coordinate.latitude,
+            longitude: mapItem.location.coordinate.longitude
+        )
+        let start = activeCoordinate
+        homeDestination = provisionalHomeDestination(mapItem: mapItem, start: start, coordinate: coordinate)
+        guard let start else {
+            isPlanningHomeRoute = false
+            homeDestinationRouteMessage = "已标记目标。获得当前位置后可刷新道路路线。"
+            return
+        }
+        isPlanningHomeRoute = true
+        homeDestinationRouteMessage = nil
+        let travelMode = exploreOptions.travelMode
+        let grid = explorationGrid ?? ExplorationGrid(coordinates: [])
+        homeRouteTask = Task {
+            do {
+                let route = try await ExplorePlanner().previewRoute(
+                    start: start,
+                    destination: mapItem,
+                    travelMode: travelMode,
+                    explorationGrid: grid
+                )
+                guard !Task.isCancelled, homeRouteGeneration.accepts(generation) else { return }
+                homeDestination = route
+                homeDestinationRouteMessage = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, homeRouteGeneration.accepts(generation) else { return }
+                homeDestinationRouteMessage = "目标已保留，但暂时无法取得道路路线。仍可按直线方向和距离前往。"
+            }
+            guard homeRouteGeneration.accepts(generation) else { return }
+            isPlanningHomeRoute = false
+            homeRouteTask = nil
+        }
+    }
+
+    private func provisionalHomeDestination(
+        mapItem: MKMapItem,
+        start: GeoCoordinate?,
+        coordinate: GeoCoordinate
+    ) -> ExploreRecommendation {
+        let distance = start?.location.distance(from: coordinate.location) ?? 0
+        let seconds = distance / max(exploreOptions.travelMode.estimatedMetersPerSecond, 0.1)
+        return ExploreRecommendation(
+            title: mapItem.name?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "目标地点",
+            subtitle: mapItem.address?.shortAddress ?? mapItem.address?.fullAddress ?? "明确目的地",
+            coordinate: coordinate,
+            estimatedMinutes: max(1, Int((seconds / 60).rounded())),
+            distanceMeters: distance,
+            routeCoordinates: [],
+            routeNoveltyRatio: 0,
+            destinationNoveltyRatio: explorationGrid?.noveltyRatio(around: coordinate) ?? 0,
+            mapItem: mapItem,
+            isRouteVerified: false
+        )
     }
 
     func loadStoredDataIfNeeded() {

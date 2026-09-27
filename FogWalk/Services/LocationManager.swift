@@ -21,8 +21,9 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var reducedAccuracy = false
     @Published private(set) var backgroundRefreshStatus: UIBackgroundRefreshStatus
     var onSavedPoints: (() -> Void)?
+    @Published private(set) var navigationRecordingID: UUID?
     let recordingStore: RecordingStore
-    private let manager = CLLocationManager()
+    private let manager: CLLocationManager
     private let motionManager = CMMotionActivityManager()
     private let preferences: UserDefaults
     private var policy = RecordingPolicy()
@@ -37,7 +38,9 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     private var backgroundActivitySession: CLBackgroundActivitySession?
     private let wakeRegionID = "FogWalk.recording.resume"
 
-    init(preferences: UserDefaults = .standard, recordingStore: RecordingStore = RecordingStore()) {
+    init(manager: CLLocationManager = CLLocationManager(), preferences: UserDefaults = .standard,
+         recordingStore: RecordingStore = RecordingStore()) {
+        self.manager = manager
         self.preferences = preferences
         self.recordingStore = recordingStore
         mode = RecordingMode(rawValue: preferences.string(forKey: "recording-mode-v1") ?? "") ?? .normal
@@ -107,6 +110,25 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
             status = "等待定位授权"
             manager.requestWhenInUseAuthorization()
         } else { beginAuthorizedRecording() }
+    }
+
+    // Navigation owns GPS while active; the home recording preference remains untouched.
+    func beginNavigationRecording(_ id: UUID) {
+        navigationRecordingID = id
+    }
+
+    func recordNavigationPoint(_ point: TrackPoint, sessionID: UUID) {
+        guard navigationRecordingID == sessionID else { return }
+        pendingPoints.append(point)
+        latestFixDate = point.timestamp; latestAccuracy = point.horizontalAccuracy
+        currentCoordinate = point.coordinate; currentCoordinateDate = point.timestamp
+        flushPendingPoints()
+    }
+
+    func endNavigationRecording(_ id: UUID) {
+        guard navigationRecordingID == id else { return }
+        navigationRecordingID = nil
+        flushPendingPoints()
     }
 
     func requestAlwaysAccess() {
@@ -378,7 +400,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
             }
             NSLog("FOGWALK_FIX accuracy=%.1f age=%.1f recording=%d", location.horizontalAccuracy,
                   now.timeIntervalSince(location.timestamp), isRecording ? 1 : 0)
-            guard isRecording else { continue }
+            guard isRecording, navigationRecordingID == nil else { continue }
             if !standardRunning {
                 policy.updateMotion(.unknown, confident: true, now: now)
                 configuredResting = nil

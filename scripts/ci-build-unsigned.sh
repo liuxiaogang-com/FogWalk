@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 scripts/ci-version.py check
 mkdir -p .build/unsigned
 # CI builds are monotonic and distinct from the migrated local build 6.
 build_number="$((1000 + ${GITHUB_RUN_NUMBER:-1}))"

@@ -179,7 +179,8 @@ final class RecordingTests: XCTestCase {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = RecordingStore(baseDirectory: root)
-        let recorder = LocationManager(preferences: UserDefaults(suiteName: UUID().uuidString)!, recordingStore: store)
+        let recorder = LocationManager(manager: RecordingLocationSensorStub(),
+                                       preferences: UserDefaults(suiteName: UUID().uuidString)!, recordingStore: store)
         guard recorder.authorizationStatus == .authorizedAlways || recorder.authorizationStatus == .authorizedWhenInUse else {
             throw XCTSkip("Run this integration check after granting the simulator test host location access")
         }
@@ -206,4 +207,15 @@ final class RecordingTests: XCTestCase {
         XCTAssertEqual(restored.points.count, 2)
         XCTAssertEqual(recorder.currentCoordinate?.latitude, 31.23030)
     }
+}
+
+private final class RecordingLocationSensorStub: CLLocationManager {
+    override var authorizationStatus: CLAuthorizationStatus { .authorizedAlways }
+    override func startUpdatingLocation() {}
+    override func stopUpdatingLocation() {}
+    override func startMonitoringSignificantLocationChanges() {}
+    override func stopMonitoringSignificantLocationChanges() {}
+    override func startMonitoringVisits() {}
+    override func stopMonitoringVisits() {}
+    override func requestLocation() {}
 }

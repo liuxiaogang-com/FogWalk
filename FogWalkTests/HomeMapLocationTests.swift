@@ -95,8 +95,20 @@ final class HomeMapLocationTests: XCTestCase {
         XCTAssertEqual(HomeMapLocation.validHeading(trueHeading: 0, magneticHeading: 12, accuracy: 5), 0)
         XCTAssertEqual(HomeMapLocation.validHeading(trueHeading: -1, magneticHeading: 359, accuracy: 5), 359)
         XCTAssertNil(HomeMapLocation.validHeading(trueHeading: 12, magneticHeading: 10, accuracy: -1))
+        XCTAssertNil(HomeMapLocation.validHeading(trueHeading: 12, magneticHeading: 10, accuracy: 60))
         XCTAssertNil(HomeMapLocation.validHeading(trueHeading: -1, magneticHeading: -1, accuracy: 5))
         XCTAssertNil(HomeMapLocation.validHeading(trueHeading: .nan, magneticHeading: .nan, accuracy: 5))
+    }
+
+    func testHeadingSmootherSuppressesJitterAndUsesShortestPathAcrossNorth() throws {
+        var smoother = HeadingSmoother()
+        let start = Date()
+        XCTAssertEqual(try XCTUnwrap(smoother.update(rawHeading: 359, at: start)), 359, accuracy: 0.001)
+        XCTAssertNil(smoother.update(rawHeading: 1, at: start.addingTimeInterval(0.1)))
+        XCTAssertNil(smoother.update(rawHeading: 358, at: start.addingTimeInterval(0.2)))
+        let changed = try XCTUnwrap(smoother.update(rawHeading: 20, at: start.addingTimeInterval(0.5)))
+        XCTAssertLessThan(HeadingSmoother.angularDistance(changed, 5), 8)
+        XCTAssertLessThan(HeadingSmoother.angularDistance(changed, 359), 20)
     }
 
     private func fix(at date: Date, accuracy: Double = 5, latitude: Double = 31.23) -> CLLocation {

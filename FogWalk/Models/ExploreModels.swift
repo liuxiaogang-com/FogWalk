@@ -1,5 +1,5 @@
 import Foundation
-import MapKit
+@preconcurrency import MapKit
 
 enum ExploreTravelMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case walking = "步行"
@@ -149,6 +149,75 @@ struct ExploreRecommendation: Identifiable {
     }
 }
 
+struct PlaceSearchResult: Identifiable {
+    let id: String
+    let title: String
+    let addressText: String
+    let coordinate: GeoCoordinate
+    let mapItem: MKMapItem
+
+    init(mapItem: MKMapItem) {
+        let coordinate = GeoCoordinate(
+            latitude: mapItem.location.coordinate.latitude,
+            longitude: mapItem.location.coordinate.longitude
+        )
+        title = mapItem.name?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "未命名地点"
+        addressText = mapItem.address?.shortAddress ?? mapItem.address?.fullAddress ?? "暂无详细地址"
+        self.coordinate = coordinate
+        self.mapItem = mapItem
+        id = "\(title.lowercased())|\(Int((coordinate.latitude * 100_000).rounded()))|\(Int((coordinate.longitude * 100_000).rounded()))"
+    }
+
+    func distanceText(from origin: GeoCoordinate?) -> String? {
+        guard let guidance = DestinationGuidance(origin: origin, destination: coordinate) else { return nil }
+        return "直线 \(guidance.distanceText)"
+    }
+}
+
+struct DestinationGuidance: Equatable, Sendable {
+    let distanceMeters: Double
+    let bearingDegrees: Double
+
+    init?(origin: GeoCoordinate?, destination: GeoCoordinate?) {
+        guard let origin, let destination,
+              CLLocationCoordinate2DIsValid(origin.clCoordinate),
+              CLLocationCoordinate2DIsValid(destination.clCoordinate) else { return nil }
+        distanceMeters = origin.location.distance(from: destination.location)
+        let latitude1 = origin.latitude * .pi / 180
+        let latitude2 = destination.latitude * .pi / 180
+        let longitudeDelta = (destination.longitude - origin.longitude) * .pi / 180
+        let y = sin(longitudeDelta) * cos(latitude2)
+        let x = cos(latitude1) * sin(latitude2) - sin(latitude1) * cos(latitude2) * cos(longitudeDelta)
+        bearingDegrees = Self.normalized(atan2(y, x) * 180 / .pi)
+    }
+
+    var distanceText: String {
+        Self.distanceText(meters: distanceMeters)
+    }
+
+    static func distanceText(meters: Double) -> String {
+        switch meters {
+        case ..<100:
+            return "\(max(1, Int(meters.rounded()))) 米"
+        case ..<1_000:
+            return "\(Int((meters / 10).rounded()) * 10) 米"
+        case ..<10_000:
+            return String(format: "%.1f 公里", meters / 1_000)
+        default:
+            return "\(Int((meters / 1_000).rounded())) 公里"
+        }
+    }
+
+    func screenBearing(mapHeading: Double) -> Double {
+        Self.normalized(bearingDegrees - mapHeading)
+    }
+
+    private static func normalized(_ degrees: Double) -> Double {
+        let remainder = degrees.truncatingRemainder(dividingBy: 360)
+        return remainder >= 0 ? remainder : remainder + 360
+    }
+}
+
 struct ExploreOptions: Codable, Equatable, Sendable {
     var minutes = 30
     var travelMode: ExploreTravelMode = .walking
@@ -160,4 +229,8 @@ struct SearchGeneration {
     private(set) var value = 0
     mutating func advance() -> Int { value &+= 1; return value }
     func accepts(_ generation: Int) -> Bool { generation == value }
+}
+
+extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

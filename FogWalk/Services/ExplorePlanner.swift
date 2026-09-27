@@ -1,5 +1,5 @@
 import Foundation
-import MapKit
+@preconcurrency import MapKit
 
 @MainActor
 private final class MapServiceCancellation {
@@ -28,6 +28,23 @@ enum ExplorePlannerError: LocalizedError {
     }
 }
 
+enum PlaceSearchError: LocalizedError {
+    case emptyQuery
+    case noResults
+    case serviceUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyQuery:
+            return "请输入公园、商场或具体地点名称。"
+        case .noResults:
+            return "没有找到匹配地点。可以补充城市、区县或道路名称后重试。"
+        case .serviceUnavailable:
+            return "Apple 地图地点搜索暂时不可用，请检查网络后重试。"
+        }
+    }
+}
+
 @MainActor
 struct ExplorePlanner {
     static func fitsBudget(seconds: Double, minutes: Int) -> Bool {
@@ -36,6 +53,41 @@ struct ExplorePlanner {
     private struct ScoredRecommendation {
         let recommendation: ExploreRecommendation
         let score: Double
+    }
+
+    func searchPlaces(query: String, near origin: GeoCoordinate?) async throws -> [PlaceSearchResult] {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { throw PlaceSearchError.emptyQuery }
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = normalized
+        request.resultTypes = [.pointOfInterest, .address]
+        if let origin {
+            request.region = MKCoordinateRegion(
+                center: origin.clCoordinate,
+                latitudinalMeters: 100_000,
+                longitudinalMeters: 100_000
+            )
+        }
+        let response: MKLocalSearch.Response
+        do {
+            response = try await runSearch(MKLocalSearch(request: request))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw PlaceSearchError.serviceUnavailable
+        }
+        try Task.checkCancellation()
+        var seen = Set<String>()
+        let results = response.mapItems
+            .map(PlaceSearchResult.init)
+            .filter { seen.insert($0.id).inserted }
+            .sorted { left, right in
+                guard let origin else { return left.title.localizedStandardCompare(right.title) == .orderedAscending }
+                return origin.location.distance(from: left.coordinate.location)
+                    < origin.location.distance(from: right.coordinate.location)
+            }
+        guard !results.isEmpty else { throw PlaceSearchError.noResults }
+        return Array(results.prefix(20))
     }
 
     func recommendations(

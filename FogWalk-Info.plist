@@ -27,9 +27,9 @@
 		<string>iosamap</string>
 	</array>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>持续记录足迹，用于在地图上揭开已经探索的区域。</string>
+	<string>持续记录足迹或进行路书导航，在后台保持位置更新和转弯提醒。</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>获取当前位置，用于记录足迹并推荐附近的未知区域。</string>
+	<string>获取当前位置，用于记录足迹、探索附近区域和沿路书导航。</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>NSMotionUsageDescription</key>
@@ -37,6 +37,18 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
+		<string>audio</string>
+	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>GPX 路书</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key><array><string>com.topografix.gpx</string></array>
+		</dict>
 	</array>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>

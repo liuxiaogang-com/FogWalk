@@ -10,6 +10,11 @@ enum AppRuntime {
         false
         #endif
     }
+
+    static func keepScreenAwake(_ active: Bool) {
+        guard !isUnitTestHost else { return }
+        UIApplication.shared.isIdleTimerDisabled = active
+    }
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -24,12 +29,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         guard !AppRuntime.isUnitTestHost else { return }
+        AppRuntime.keepScreenAwake(true)
         AppRuntime.model.applicationBecameActive()
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         guard !AppRuntime.isUnitTestHost else { return }
+        AppRuntime.keepScreenAwake(false)
         AppRuntime.model.locationManager.setBackground(true)
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        AppRuntime.keepScreenAwake(false)
     }
 }
 
@@ -46,8 +57,13 @@ struct FogWalkApp: App {
             } else {
                 ContentView()
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { AppRuntime.model.applicationBecameActive() }
-                    else if phase == .background { AppRuntime.model.locationManager.setBackground(true) }
+                    if phase == .active {
+                        AppRuntime.keepScreenAwake(true)
+                        AppRuntime.model.applicationBecameActive()
+                    } else if phase == .background {
+                        AppRuntime.keepScreenAwake(false)
+                        AppRuntime.model.locationManager.setBackground(true)
+                    }
                 }
             }
         }

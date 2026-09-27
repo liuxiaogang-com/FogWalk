@@ -1,5 +1,5 @@
 import SwiftUI
-import MapKit
+@preconcurrency import MapKit
 
 struct ExploreMapDestination: Identifiable, Equatable {
     let id: UUID
@@ -26,6 +26,7 @@ struct FogMapView: UIViewRepresentable {
     var destinationMarkers: [ExploreMapDestination] = []
     var selectedDestinationID: UUID?
     var onDestinationSelection: ((UUID) -> Void)?
+    var onDestinationVisibilityChange: ((Bool) -> Void)?
     var isLongPressSelectionEnabled = false
     var onLongPressSelection: ((GeoCoordinate) -> Void)?
     // Only the home map owns these controls; destination maps keep their camera behavior.
@@ -87,6 +88,7 @@ struct FogMapView: UIViewRepresentable {
         context.coordinator.isLongPressSelectionEnabled = isLongPressSelectionEnabled
         context.coordinator.onLongPressSelection = onLongPressSelection
         context.coordinator.onDestinationSelection = onDestinationSelection
+        context.coordinator.onDestinationVisibilityChange = onDestinationVisibilityChange
         context.coordinator.onUserMovedMap = onUserMovedMap
         context.coordinator.deviceHeading = deviceHeading
         mapView.isRotateEnabled = orientation == nil
@@ -245,6 +247,7 @@ struct FogMapView: UIViewRepresentable {
             context.coordinator.updateHomeCamera(on: canvas, orientation: orientation,
                                                  coordinate: liveCurrentCoordinate, follows: followsCurrentLocation)
         }
+        context.coordinator.updateDestinationVisibility(on: mapView, coordinate: destinationCoordinate)
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
@@ -259,11 +262,14 @@ struct FogMapView: UIViewRepresentable {
         var isLongPressSelectionEnabled = false
         var onLongPressSelection: ((GeoCoordinate) -> Void)?
         var onDestinationSelection: ((UUID) -> Void)?
+        var onDestinationVisibilityChange: ((Bool) -> Void)?
         var onUserMovedMap: (() -> Void)?
         var deviceHeading: Double?
         var liveAnnotation: HomeLocationAnnotation?
         private var lastOrientation: MapOrientation?
         private var lastFollowCoordinate: GeoCoordinate?
+        private var trackedDestinationCoordinate: GeoCoordinate?
+        private var lastDestinationVisibility: Bool?
 
         func updateHomeLocation(on mapView: MKMapView, coordinate: GeoCoordinate?) {
             if let coordinate {
@@ -291,15 +297,20 @@ struct FogMapView: UIViewRepresentable {
             let currentCamera = canvas.homeCameraSnapshot
             let targetHeading = orientation == .northUp ? 0 : (deviceHeading ?? currentCamera.heading)
             let canFollow = follows && !hasUserMovedMap && coordinate != nil
-            let headingChanged = abs(currentCamera.heading - targetHeading) > 0.1
-            if orientationChanged || headingChanged || (canFollow && lastFollowCoordinate != coordinate) {
+            let headingChanged = HeadingSmoother.angularDistance(currentCamera.heading, targetHeading) > 0.5
+            let coordinateMoved = canFollow && {
+                guard let coordinate else { return false }
+                guard let lastFollowCoordinate else { return true }
+                return lastFollowCoordinate.location.distance(from: coordinate.location) >= 0.75
+            }()
+            if orientationChanged || headingChanged || coordinateMoved {
                 let camera = currentCamera
                 if canFollow, let coordinate { camera.centerCoordinate = coordinate.clCoordinate }
                 // Position following and orientation are independent. Copying the
                 // current camera preserves the user's zoom and browsing center.
                 camera.heading = targetHeading
                 camera.pitch = 0
-                canvas.setHomeCamera(camera, animated: false)
+                canvas.setHomeCamera(camera, animated: !orientationChanged && hasPositionedMap)
                 lastFollowCoordinate = canFollow ? coordinate : nil
             }
             if !canFollow { lastFollowCoordinate = nil }
@@ -313,6 +324,22 @@ struct FogMapView: UIViewRepresentable {
 
         func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
             updateHeadingArrow(on: mapView)
+            updateDestinationVisibility(on: mapView, coordinate: trackedDestinationCoordinate)
+        }
+
+        func updateDestinationVisibility(on mapView: MKMapView, coordinate: GeoCoordinate?) {
+            trackedDestinationCoordinate = coordinate
+            guard let coordinate else {
+                lastDestinationVisibility = nil
+                return
+            }
+            let point = mapView.convert(coordinate.clCoordinate, toPointTo: mapView)
+            let visibleBounds = mapView.bounds.insetBy(dx: 28, dy: 88)
+            let isVisible = point.x.isFinite && point.y.isFinite && visibleBounds.contains(point)
+            guard lastDestinationVisibility != isVisible else { return }
+            lastDestinationVisibility = isVisible
+            let callback = onDestinationVisibilityChange
+            DispatchQueue.main.async { callback?(isVisible) }
         }
 
         func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
@@ -321,6 +348,7 @@ struct FogMapView: UIViewRepresentable {
                 return view.subviews.contains(where: isInteracting)
             }
             if isInteracting(mapView) {
+                guard !hasUserMovedMap else { return }
                 hasUserMovedMap = true
                 // Delegate callbacks can run during a representable update.
                 let callback = onUserMovedMap

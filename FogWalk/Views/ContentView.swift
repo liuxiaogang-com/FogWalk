@@ -4,26 +4,60 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppRuntime.model
+    @StateObject private var roadbooks = RoadbookStore()
+    @StateObject private var roadbookNavigator = RoadbookNavigation(recorder: AppRuntime.model.locationManager)
+    @State private var isRoadbooksPresented = ProcessInfo.processInfo.arguments.contains("--open-roadbooks")
     @State private var isImporterPresented = false
     @State private var isExporterPresented = false
     @State private var exportDocument: FogWalkArchiveDocument?
     @State private var isLayersPresented = false
     @State private var isReviewPresented = false
     @State private var isRecordingPresented = ProcessInfo.processInfo.arguments.contains("--open-recording")
+    @State private var isDestinationSearchPresented = false
+    @State private var isHomeDestinationVisible = true
 
     var body: some View {
         mapExperience
         .preferredColorScheme(.dark)
-        .task { model.loadStoredDataIfNeeded() }
+        .task {
+            model.loadStoredDataIfNeeded()
+            #if DEBUG && targetEnvironment(simulator)
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--roadbook-fixture") {
+                let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("roadbook-test.gpx")
+                if let data = try? Data(contentsOf: url), let id = try? roadbooks.importData(data, name: "GPX 测试路书") {
+                    if arguments.contains("--roadbook-detail") { roadbooks.selectedID = id }
+                    if arguments.contains("--roadbook-preview"), let book = roadbooks.books.first(where: { $0.id == id }) { roadbookNavigator.start(book, preview: true) }
+                }
+            }
+            #endif
+        }
         .onAppear { updateMapSensors() }
         .onDisappear { model.homeMapLocation.setActive(false) }
-        .onChange(of: scenePhase) { _, _ in updateMapSensors() }
+        .onChange(of: scenePhase) { _, phase in
+            updateMapSensors()
+            if phase != .active { roadbookNavigator.checkpoint() }
+        }
         .onChange(of: model.isExploreSheetPresented) { _, _ in updateMapSensors() }
+        .onChange(of: isRoadbooksPresented) { _, _ in updateMapSensors() }
+        .onOpenURL { url in
+            if url.pathExtension.lowercased() == "gpx" {
+                isRoadbooksPresented = true
+                roadbooks.importFile(url)
+            } else if url.pathExtension.lowercased() == "fogwalk" { model.importFiles([url]) }
+        }
+        .fullScreenCover(isPresented: $isRoadbooksPresented) {
+            RoadbookLibraryView(store: roadbooks, navigator: roadbookNavigator)
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             model.refreshCalendarDayIfNeeded()
         }
         .fullScreenCover(isPresented: $model.isExploreSheetPresented) {
             ExploreSheet(model: model)
+        }
+        .sheet(isPresented: $isDestinationSearchPresented) {
+            DestinationSearchSheet(model: model)
+                .presentationDetents([.large])
         }
         .sheet(isPresented: $isLayersPresented) { layerPanel.presentationDetents([.medium, .large]) }
         .sheet(isPresented: $isReviewPresented) { reviewPanel.presentationDetents([.medium, .large]) }
@@ -79,7 +113,12 @@ struct ContentView: View {
                 recenterRequestID: model.homeMapLocation.recenterRequestID,
                 recenterSpanMeters: 3_000,
                 trackPresentation: model.presentation,
-                overviewRequestID: model.mainMapOverviewRequestID,
+                overviewRequestID: model.mainMapOverviewRequestID + model.homeDestinationOverviewRequestID,
+                highlightedRoute: model.homeDestination?.routeCoordinates ?? [],
+                destinationCoordinate: model.homeDestination?.coordinate,
+                onDestinationVisibilityChange: { isVisible in
+                    withAnimation(.easeOut(duration: 0.18)) { isHomeDestinationVisible = isVisible }
+                },
                 orientation: model.homeMapLocation.orientation,
                 deviceHeading: model.homeMapLocation.heading,
                 followsCurrentLocation: model.homeMapLocation.isFollowing,
@@ -89,6 +128,7 @@ struct ContentView: View {
 
             VStack(spacing: 10) {
                 topBar
+                destinationSearchBar
                 if model.isLoading {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.mini)
@@ -98,6 +138,7 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
                 Spacer()
+                if model.homeDestination != nil { homeDestinationCard }
                 VStack(alignment: .trailing, spacing: 8) {
                     if let message = mapStatusMessage {
                         Text(message)
@@ -124,6 +165,18 @@ struct ContentView: View {
             .padding(.top, 8)
             .padding(.bottom, 10)
 
+            if let destination = model.homeDestination,
+               !isHomeDestinationVisible,
+               let guidance = DestinationGuidance(origin: model.activeCoordinate, destination: destination.coordinate) {
+                DestinationEdgeIndicator(
+                    title: destination.title,
+                    guidance: guidance,
+                    mapHeading: model.homeMapLocation.orientation == .phoneHeading
+                        ? (model.homeMapLocation.heading ?? 0) : 0,
+                    action: model.showHomeDestinationOverview
+                )
+            }
+
             if model.isImporting || model.isPreparingExport {
                 workingOverlay
             }
@@ -140,6 +193,12 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             Spacer(minLength: 8)
+            Button { isRoadbooksPresented = true } label: {
+                Label("路书", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .font(.caption).padding(.horizontal, 12).frame(height: 44)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
             Button { isRecordingPresented = true } label: {
                 Label(model.locationManager.isRecording ? "记录中" : "记录", systemImage: "record.circle")
                     .font(.caption).foregroundStyle(model.locationManager.isRecording ? .green : .primary)
@@ -179,6 +238,89 @@ struct ContentView: View {
             }
             .accessibilityLabel("更多：数据与地图设置")
         }
+    }
+
+    private var destinationSearchBar: some View {
+        Button {
+            isDestinationSearchPresented = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("搜索明确地点")
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.homeDestination == nil ? "公园、商场、地址或具体名称" : "当前目标：\(model.homeDestination?.title ?? "")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(MapControlButtonStyle())
+        .accessibilityHint("搜索真实地点并设为地图目标")
+    }
+
+    private var homeDestinationCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "mappin.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.homeDestination?.title ?? "目标地点")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text(homeDestinationStatusText)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(model.homeDestinationRouteMessage == nil ? Color.secondary : Color.orange)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            if model.isPlanningHomeRoute {
+                ProgressView().tint(.orange).frame(width: 36, height: 36)
+            } else {
+                Button(action: model.refreshHomeDestinationRoute) {
+                    Image(systemName: "arrow.clockwise").frame(width: 36, height: 36)
+                }
+                .buttonStyle(MapControlButtonStyle())
+                .accessibilityLabel("刷新目标路线")
+            }
+            Button(action: model.showHomeDestinationOverview) {
+                Image(systemName: "map").frame(width: 36, height: 36)
+            }
+            .buttonStyle(MapControlButtonStyle())
+            .accessibilityLabel("查看目标路线总览")
+            Button(action: model.clearHomeDestination) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(MapControlButtonStyle())
+            .accessibilityLabel("清除目标")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var homeDestinationStatusText: String {
+        if model.isPlanningHomeRoute { return "正在规划道路路线…" }
+        if let message = model.homeDestinationRouteMessage { return message }
+        guard let destination = model.homeDestination else { return "" }
+        if destination.isRouteVerified {
+            return "\(destination.distanceText) · \(destination.timeText)"
+        }
+        if let guidance = DestinationGuidance(origin: model.activeCoordinate, destination: destination.coordinate) {
+            return "直线 \(guidance.distanceText)"
+        }
+        return "等待当前位置"
     }
 
     private var emptyLibraryCard: some View {
@@ -232,7 +374,7 @@ struct ContentView: View {
     private func updateMapSensors() {
         // Permission prompts make the scene inactive; keep foreground sensors
         // available until the app actually backgrounds or leaves the home map.
-        model.homeMapLocation.setActive(scenePhase != .background && !model.isExploreSheetPresented)
+        model.homeMapLocation.setActive(scenePhase != .background && !model.isExploreSheetPresented && !isRoadbooksPresented)
     }
 
     private var mapStatusMessage: String? {
@@ -413,6 +555,56 @@ private struct MapControlButtonStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.65 : 1)
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct DestinationEdgeIndicator: View {
+    let title: String
+    let guidance: DestinationGuidance
+    let mapHeading: Double
+    let action: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let angle = guidance.screenBearing(mapHeading: mapHeading)
+            let radians = CGFloat(angle) * .pi / 180
+            let horizontal = sin(radians)
+            let vertical = -cos(radians)
+            let halfWidth = max(1, proxy.size.width / 2 - 62)
+            let halfHeight = max(1, proxy.size.height / 2 - 190)
+            let horizontalScale = abs(horizontal) < 0.001 ? Double.greatestFiniteMagnitude : halfWidth / abs(horizontal)
+            let verticalScale = abs(vertical) < 0.001 ? Double.greatestFiniteMagnitude : halfHeight / abs(vertical)
+            let scale = min(horizontalScale, verticalScale)
+
+            Button(action: action) {
+                HStack(spacing: 7) {
+                    Image(systemName: "arrow.up")
+                        .font(.body.bold())
+                        .rotationEffect(.degrees(angle))
+                        .frame(width: 24, height: 24)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).lineLimit(1)
+                        Text("直线 \(guidance.distanceText)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay { Capsule().strokeBorder(Color.orange.opacity(0.55), lineWidth: 1) }
+                .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+            }
+            .buttonStyle(MapControlButtonStyle())
+            .accessibilityLabel("目标在屏幕外，\(title)，直线 \(guidance.distanceText)")
+            .accessibilityHint("点击查看路线总览")
+            .position(
+                x: proxy.size.width / 2 + horizontal * scale,
+                y: proxy.size.height / 2 + vertical * scale
+            )
+        }
+        .ignoresSafeArea()
     }
 }
 

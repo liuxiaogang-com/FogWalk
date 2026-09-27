@@ -13,16 +13,22 @@ common=(
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 )
 
+result_bundle=".build/Tests.xcresult"
+if [[ -e "$result_bundle" ]]; then
+  result_bundle=".build/Tests-$(date -u +%Y%m%dT%H%M%SZ).xcresult"
+fi
+
 echo "$(date -u +%FT%TZ) Build test host and test bundle" | tee .build/test.log
 xcodebuild build-for-testing "${common[@]}" 2>&1 | tee -a .build/test.log
 echo "$(date -u +%FT%TZ) Wait for simulator boot" | tee -a .build/test.log
 xcrun simctl bootstatus "$device_id" -b 2>&1 | tee .build/simulator-boot.log
 echo "$(date -u +%FT%TZ) Start XCTest (without debugger or production homepage)" | tee -a .build/test.log
 xcodebuild test-without-building "${common[@]}" \
-  -resultBundlePath .build/Tests.xcresult \
+  -resultBundlePath "$result_bundle" \
   -parallel-testing-enabled NO \
   -skip-testing:FogWalkTests/FogWalkTests/testFullDemoImportParsesAndDeduplicatesAllSources \
   -skip-testing:FogWalkTests/FogWalkTests/testDayPresentationHasVisiblePathsAtExplicitHistoricalDate \
   -skip-testing:FogWalkTests/StartupPerformanceTests/testFullLibraryStartupBenchmark \
   2>&1 | tee -a .build/test.log
+echo "XCTest result: $result_bundle" | tee -a .build/test.log
 echo "$(date -u +%FT%TZ) XCTest completed" | tee -a .build/test.log

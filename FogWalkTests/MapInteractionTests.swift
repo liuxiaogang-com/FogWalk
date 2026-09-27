@@ -59,6 +59,41 @@ final class MapInteractionTests: XCTestCase {
         }
     }
 
+    func testNorthUpMapFollowsWalkingUntilUserBrowses() async throws {
+        let state = MapHarnessState()
+        state.orientation = .northUp
+        state.live = state.start
+        state.follows = true
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        let host = UIHostingController(rootView: MapHarness(state: state))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(500))
+        let map = try XCTUnwrap(findMap(host.view))
+
+        let walked = GeoCoordinate(latitude: 31.231, longitude: 121.471)
+        state.live = walked
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(map.centerCoordinate.latitude, walked.latitude, accuracy: 0.0001)
+        XCTAssertEqual(map.centerCoordinate.longitude, walked.longitude, accuracy: 0.0001)
+        XCTAssertEqual(map.camera.heading, 0, accuracy: 0.1)
+
+        let coordinator = try XCTUnwrap(map.delegate as? FogMapView.Coordinator)
+        coordinator.hasUserMovedMap = true
+        state.follows = false
+        let browsingCenter = GeoCoordinate(latitude: 31.24, longitude: 121.48)
+        let camera = map.camera.copy() as! MKMapCamera
+        camera.centerCoordinate = browsingCenter.clCoordinate
+        map.setCamera(camera, animated: false)
+        state.live = GeoCoordinate(latitude: 31.232, longitude: 121.472)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(map.centerCoordinate.latitude, browsingCenter.latitude, accuracy: 0.0001)
+        XCTAssertEqual(map.centerCoordinate.longitude, browsingCenter.longitude, accuracy: 0.0001)
+    }
+
     func testHomeHeadingContinuesAfterZoomAndPanAndRecenterPreservesScale() async throws {
         let state = MapHarnessState()
         state.orientation = .phoneHeading

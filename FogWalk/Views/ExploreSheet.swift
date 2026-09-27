@@ -1,5 +1,5 @@
 import SwiftUI
-import MapKit
+@preconcurrency import MapKit
 
 struct ExploreSheet: View {
     @ObservedObject var model: AppModel

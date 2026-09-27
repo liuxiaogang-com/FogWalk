@@ -11,6 +11,58 @@ enum MapOrientation: String, CaseIterable, Identifiable {
     var icon: String { self == .northUp ? "safari" : "location.north.line.fill" }
 }
 
+struct HeadingSmoother {
+    private(set) var filteredHeading: Double?
+    private var publishedHeading: Double?
+    private var lastPublishDate: Date?
+
+    mutating func update(rawHeading: Double, at date: Date) -> Double? {
+        guard rawHeading.isFinite else { return nil }
+        let raw = Self.normalized(rawHeading)
+        guard let previous = filteredHeading else {
+            filteredHeading = raw
+            publishedHeading = raw
+            lastPublishDate = date
+            return raw
+        }
+        let candidate = Self.normalized(previous + Self.signedDelta(from: previous, to: raw) * 0.28)
+        filteredHeading = candidate
+        guard let publishedHeading, let lastPublishDate else {
+            self.publishedHeading = candidate
+            self.lastPublishDate = date
+            return candidate
+        }
+        let delta = abs(Self.signedDelta(from: publishedHeading, to: candidate))
+        let elapsed = date.timeIntervalSince(lastPublishDate)
+        guard delta >= 18 || (elapsed >= 0.22 && delta >= 3) || (elapsed >= 1 && delta >= 1) else { return nil }
+        self.publishedHeading = candidate
+        self.lastPublishDate = date
+        return candidate
+    }
+
+    mutating func reset() {
+        filteredHeading = nil
+        publishedHeading = nil
+        lastPublishDate = nil
+    }
+
+    static func angularDistance(_ left: Double, _ right: Double) -> Double {
+        abs(signedDelta(from: left, to: right))
+    }
+
+    private static func signedDelta(from: Double, to: Double) -> Double {
+        var delta = normalized(to) - normalized(from)
+        if delta > 180 { delta -= 360 }
+        if delta < -180 { delta += 360 }
+        return delta
+    }
+
+    private static func normalized(_ degrees: Double) -> Double {
+        let remainder = degrees.truncatingRemainder(dividingBy: 360)
+        return remainder >= 0 ? remainder : remainder + 360
+    }
+}
+
 /// Foreground map sensors never change the recorder's distance filter or write footprints.
 @MainActor
 final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
@@ -23,6 +75,8 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
     @Published private(set) var recenterRequestID = 0
     private(set) var isActive = false
     private var coordinateDate: Date?
+    private var headingDate: Date?
+    private var headingSmoother = HeadingSmoother()
     private var freshnessTask: Task<Void, Never>?
     private let manager: CLLocationManager
     private let preferences: UserDefaults
@@ -35,7 +89,7 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.distanceFilter = kCLDistanceFilterNone
-        manager.headingFilter = 2
+        manager.headingFilter = 3
         manager.headingOrientation = .portrait
         manager.pausesLocationUpdatesAutomatically = false
     }
@@ -44,6 +98,8 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
         guard isActive != active else { return }
         isActive = active
         heading = nil
+        headingDate = nil
+        headingSmoother.reset()
         if active {
             expireLocation()
             startAuthorizedSensors()
@@ -106,6 +162,11 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
         if let coordinateDate, now.timeIntervalSince(coordinateDate) > 30 {
             coordinate = nil
         }
+        if let headingDate, now.timeIntervalSince(headingDate) > 5 {
+            heading = nil
+            self.headingDate = nil
+            headingSmoother.reset()
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -118,6 +179,8 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
             coordinate = nil
             coordinateDate = nil
             heading = nil
+            headingDate = nil
+            headingSmoother.reset()
             isFollowing = false
             recenterCoordinate = nil
             message = "定位权限未开启，请在系统设置中允许位置访问。"
@@ -143,13 +206,18 @@ final class HomeMapLocation: NSObject, ObservableObject, @preconcurrency CLLocat
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         guard isActive else { return }
-        guard abs(newHeading.timestamp.timeIntervalSinceNow) <= 15 else { heading = nil; return }
-        heading = Self.validHeading(trueHeading: newHeading.trueHeading, magneticHeading: newHeading.magneticHeading,
-                                    accuracy: newHeading.headingAccuracy)
+        guard abs(newHeading.timestamp.timeIntervalSinceNow) <= 15,
+              let value = Self.validHeading(trueHeading: newHeading.trueHeading,
+                                             magneticHeading: newHeading.magneticHeading,
+                                             accuracy: newHeading.headingAccuracy) else { return }
+        headingDate = newHeading.timestamp
+        if let smoothed = headingSmoother.update(rawHeading: value, at: newHeading.timestamp) {
+            heading = smoothed
+        }
     }
 
     static func validHeading(trueHeading: Double, magneticHeading: Double, accuracy: Double) -> Double? {
-        guard accuracy.isFinite, accuracy >= 0 else { return nil }
+        guard accuracy.isFinite, accuracy >= 0, accuracy <= 45 else { return nil }
         let value = trueHeading >= 0 ? trueHeading : magneticHeading
         guard value.isFinite, value >= 0, value < 360 else { return nil }
         return value
