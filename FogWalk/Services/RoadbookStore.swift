@@ -7,7 +7,11 @@ private final class RoadbookXML: NSObject, XMLParserDelegate {
     var stack=[String](), text="", name="", point:RoadbookPoint?, pointName=""
     var count=0, routeCount=0
     var failure:String?
+    var completedRoot = false
     func parser(_ parser:XMLParser,didStartElement element:String,namespaceURI:String?,qualifiedName:String?,attributes:[String:String]) {
+        if stack.isEmpty && (element != "gpx" || (namespaceURI != nil && namespaceURI != "" && namespaceURI != "http://www.topografix.com/GPX/1/0" && namespaceURI != "http://www.topografix.com/GPX/1/1")) {
+            failure = "请选择 GPX 路书文件，当前内容不是 GPX。"; parser.abortParsing(); return
+        }
         stack.append(element); text=""
         if element=="trkseg" { tracks.append([]) }
         if element=="rte" { routeCount+=1 }
@@ -22,6 +26,7 @@ private final class RoadbookXML: NSObject, XMLParserDelegate {
     }
     func parser(_ parser:XMLParser,foundCharacters string:String) { if text.utf8.count<4096 { text+=string } }
     func parser(_ parser:XMLParser,didEndElement element:String,namespaceURI:String?,qualifiedName:String?) {
+        if element == "gpx", stack.count == 1 { completedRoot = true }
         if element=="name" {
             if stack.contains("wpt") { pointName=text.trimmingCharacters(in:.whitespacesAndNewlines) }
             else if name.isEmpty, !stack.contains("trkpt"),!stack.contains("rtept") { name=text.trimmingCharacters(in:.whitespacesAndNewlines) }
@@ -36,11 +41,30 @@ private final class RoadbookXML: NSObject, XMLParserDelegate {
         }
         if !stack.isEmpty { stack.removeLast() }; text=""
     }
-    static func decode(_ data:Data,fallbackName:String) throws -> Roadbook {
+    static func decode(_ data:Data,fallbackName:String,allowRecovery:Bool = true) throws -> Roadbook {
         guard data.count<=15_000_000 else { throw RoadbookError.message("GPX 文件不能超过 15 MB。") }
         let reader=RoadbookXML(), parser=XMLParser(data:data)
-        parser.shouldResolveExternalEntities=false; parser.delegate=reader
-        guard parser.parse() else { throw RoadbookError.message(reader.failure ?? "GPX 文件格式不完整，无法导入。") }
+        parser.shouldResolveExternalEntities=false; parser.shouldProcessNamespaces=true; parser.delegate=reader
+        let valid = parser.parse()
+        if !valid {
+            // Recover only a complete, independently valid GPX document followed
+            // by export residue. Never invent closing tags or salvage partial tracks.
+            if allowRecovery, reader.completedRoot, reader.failure == nil,
+               let text = String(data:data,encoding:.utf8),
+               let closing = text.range(of: #"</(?:[A-Za-z_][\w.-]*:)?gpx\s*>"#, options:.regularExpression) {
+                let suffix = String(text[closing.upperBound...])
+                let hasSecondDocument = suffix.range(of: #"<(?:[A-Za-z_][\w.-]*:)?gpx(?:\s|>)|<\?xml"#, options:.regularExpression) != nil
+                if !hasSecondDocument {
+                    let prefix = Data(text[..<closing.upperBound].utf8)
+                    if var recovered = try? decode(prefix,fallbackName:fallbackName,allowRecovery:false) {
+                        recovered.importWarning = "已恢复完整 GPX 路线，忽略结束标签后的 \(suffix.utf8.count) 字节异常附加内容；原文件未修改。"
+                        return recovered
+                    }
+                }
+            }
+            throw RoadbookError.message(reader.failure ?? "GPX 文件不完整或含异常内容，无法安全导入。请重新导出完整文件。")
+        }
+        guard reader.completedRoot else { throw RoadbookError.message("文件中没有完整 GPX 路书。") }
         let segments=reader.tracks.filter { !$0.isEmpty }
         guard segments.count<=1, reader.routeCount<=1 else { throw RoadbookError.message("这份 GPX 含多段轨迹，请先导出一条连续路线，避免把断点误连成道路。") }
         let source=segments.first ?? reader.route
@@ -89,6 +113,9 @@ final class RoadbookStore: ObservableObject {
     }
     func importFile(_ url:URL) {
         guard !importing else { message="正在导入，请完成后再选择文件。"; return }
+        guard ["gpx", "xml"].contains(url.pathExtension.lowercased()) else {
+            message="请选择 .gpx 路书文件（也支持内容为 GPX 的 .xml 文件）。"; return
+        }
         importing=true
         Task {
             do {

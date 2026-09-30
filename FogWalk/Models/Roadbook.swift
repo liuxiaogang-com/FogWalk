@@ -21,6 +21,7 @@ struct Roadbook: Codable, Identifiable, Sendable {
     let waypoints: [RoadbookWaypoint]
     var isLoop: Bool
     var deletedAt: Date?
+    var importWarning: String? = nil
     var distance: Double { zip(points, points.dropFirst()).reduce(0) { $0 + RoadbookCourse.distance($1.0, $1.1) } }
     var gap: Double { guard let a = points.first, let b = points.last else { return 0 }; return RoadbookCourse.distance(a,b) }
 }

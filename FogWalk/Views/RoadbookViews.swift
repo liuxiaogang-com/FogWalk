@@ -57,7 +57,9 @@ struct RoadbookLibraryView: View {
                 RoadbookDetailView(store: store, navigator: navigator, id: id)
             }
             .overlay { if store.importing { ProgressView("正在导入路书…").padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)) } }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.gpx, .xml]) { result in
+            // File providers may label GPX as generic data or use another app's UTI.
+            // Validate the extension and actual GPX content after selection.
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
                 switch result { case .success(let url): store.importFile(url)
                 case .failure(let error): if (error as NSError).code != NSUserCancelledError { store.message = error.localizedDescription } }
             }
@@ -109,6 +111,10 @@ struct RoadbookDetailView: View {
                     Text(roadbookDistance(book.distance)).font(.largeTitle.bold())
                     Text("\(book.points.count) 个轨迹点 · \(book.waypoints.count) 个命名途经点")
                         .foregroundStyle(.secondary)
+                    if let warning = book.importWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                     Toggle("显示所有轨迹点", isOn: $points)
                     Toggle("环线：可从线路任意位置进入", isOn: Binding(get: { book.isLoop }, set: { enabled in
                         if enabled && book.gap > 20 { confirmLoop = true }

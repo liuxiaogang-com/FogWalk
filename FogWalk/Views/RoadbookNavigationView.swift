@@ -70,6 +70,7 @@ struct RoadbookNavigationView: View {
     @State private var showPoints = false
     @State private var ending = false
     @State private var voiceSettings = false
+    @State private var showInformation = false
     private var next: RoadbookTurn? { navigator.upcoming.first }
     private var remaining: Double { max(0, navigator.guidanceCourse.length-navigator.guidanceProgress) }
     private var turnDistance: String {
@@ -87,7 +88,7 @@ struct RoadbookNavigationView: View {
                     approachPoints: navigator.approachPoints,
                     coveredSegments: navigator.journey.coveredSegments(on: navigator.course),
                     actualSegments: navigator.journey.traceSegments, recenterRequest: recenter, zoomRequest: zoom,
-                    positionFraction: 0.66, bottomOverlayInset: 275, onInteraction: { browsing = true })
+                    positionFraction: 0.66, bottomOverlayInset: navigator.readyToStartLoop ? 155 : 100, onInteraction: { browsing = true })
                     .ignoresSafeArea()
                 VStack(spacing: 14) {
                     instructionCard
@@ -107,14 +108,12 @@ struct RoadbookNavigationView: View {
             Button("结束导航", role: .destructive) { navigator.end() }
         }
         .sheet(isPresented: $voiceSettings) { RoadbookVoiceView(navigator: navigator) }
-        .alert("无法打开地图", isPresented: Binding(get: { navigator.externalNavigationError != nil }, set: { if !$0 { navigator.externalNavigationError = nil } })) {
-            Button("好") { navigator.externalNavigationError = nil }
-        } message: { Text(navigator.externalNavigationError ?? "") }
+        .sheet(isPresented: $showInformation) { informationSheet }
     }
     private var instructionCard: some View {
         HStack(spacing: 18) {
             Image(systemName: navigator.finished ? "checkmark.circle.fill" : navigator.isApproaching && !navigator.onRoute ? "flag.checkered" : (next?.symbol ?? "arrow.up"))
-                .font(.system(size: 42, weight: .semibold)).foregroundStyle(.mint).frame(width: 52)
+                .font(.system(size: 34, weight: .medium)).foregroundStyle(.mint).frame(width: 44)
             VStack(alignment: .leading, spacing: 6) {
                 Text(turnDistance).font(.system(size: 30, weight: .bold, design: .rounded))
                     .minimumScaleFactor(0.7).lineLimit(1)
@@ -142,61 +141,80 @@ struct RoadbookNavigationView: View {
     }
     private var footer: some View {
         VStack(spacing: 12) {
-            if navigator.isApproaching {
-                VStack(alignment: .leading, spacing: 10) {
-                    if navigator.readyToStartLoop {
-                        Button { navigator.confirmLoopStart(); overview = false; browsing = false; recenter += 1 } label: {
-                            Label("确认开始环线", systemImage: "play.fill").frame(maxWidth: .infinity).padding(10)
-                        }.buttonStyle(.glassProminent)
-                    } else {
-                        Text(navigator.approachMessage).font(.caption).foregroundStyle(.secondary)
-                        if let distance = navigator.entryDistance, distance <= 35 {
-                            Button { navigator.refreshLocation() } label: {
-                                Label("刷新定位，确认到达", systemImage: "location.circle").frame(maxWidth: .infinity)
-                            }.buttonStyle(.glass)
-                        }
-                        HStack {
-                            Button { navigator.planApproach() } label: { Label(navigator.isPlanningApproach ? "规划中" : "重新规划", systemImage: "arrow.clockwise") }
-                                .disabled(navigator.isPlanningApproach || navigator.position == nil)
-                            Spacer()
-                            Menu {
-                                Button("Apple 地图骑行") { navigator.openEntry(in: .apple) }
-                                Button("高德骑行") { navigator.openEntry(in: .amap) }
-                            } label: { Label("地图 App", systemImage: "arrow.up.forward.app") }
-                        }.font(.subheadline).buttonStyle(.glass)
+            HStack {
+                VStack(spacing: 4) {
+                    floatingButton("导航说明", symbol: "exclamationmark") { showInformation = true }
+                    floatingButton("导航语音", symbol: navigator.muted ? "speaker.slash.fill" : "speaker.wave.2.fill") { voiceSettings = true }
+                    if navigator.isApproaching && !navigator.readyToStartLoop {
+                        floatingButton(navigator.isPlanningApproach ? "规划中" : "重新规划", symbol: "arrow.clockwise") { navigator.planApproach() }
+                            .disabled(navigator.isPlanningApproach || navigator.position == nil)
                     }
                 }
-            } else {
-                Text(navigator.status).font(.caption).foregroundStyle(navigator.onRoute ? Color.secondary : .orange).lineLimit(2)
+                Spacer(minLength: 0)
             }
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
+            if navigator.readyToStartLoop {
+                Button { navigator.confirmLoopStart(); overview = false; browsing = false; recenter += 1 } label: {
+                    Label("确认开始环线", systemImage: "play.fill").frame(maxWidth: .infinity).frame(minHeight: 44)
+                }.buttonStyle(.glassProminent)
+            } else if navigator.isApproaching, let distance = navigator.entryDistance, distance <= 35 {
+                Button { navigator.refreshLocation() } label: {
+                    Label("刷新定位，确认到达", systemImage: "location.circle").frame(minHeight: 44)
+                }.buttonStyle(.glass)
+            }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(navigator.isApproaching ? (navigator.entryDistance == nil ? "入口距离待定位" : "入口\(navigator.approachPoints.isEmpty ? "直线" : "剩余") \(navigationDistance(navigator.approachPoints.isEmpty ? navigator.entryDistance ?? 0 : remaining))") : "剩余 \(navigationDistance(remaining))")
-                        .font(.title3.bold())
+                        .font(.subheadline.bold())
                     Text(navigator.remainingTimeText)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Button { voiceSettings = true } label: { Image(systemName: navigator.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 38, height: 44) }
-                    .accessibilityLabel("导航语音")
-                Button(navigator.finished ? "完成" : "结束", role: .destructive) { if navigator.finished { navigator.end() } else { ending = true } }
-            }.buttonStyle(.plain)
-            if !navigator.isPreview {
-                HStack(spacing: 12) {
-                    Label("未走路书", systemImage: "line.diagonal").foregroundStyle(.blue)
-                    Label("已走路段", systemImage: "line.diagonal").foregroundStyle(.gray)
-                    Label("本次轨迹", systemImage: "line.diagonal").foregroundStyle(.orange)
-                }.font(.caption2)
-                Text(navigator.recordingText).font(.caption2).foregroundStyle(.secondary)
-            }
-            if navigator.onRoute && !navigator.finished && !navigator.readyToStartLoop {
-                HStack {
-                    ForEach(Array(navigator.upcoming.dropFirst())) { turn in
-                        Label(navigationDistance(max(0, turn.meters-navigator.guidanceProgress)), systemImage: turn.symbol).font(.caption)
-                        Spacer()
-                    }
+                Button {
+                    if navigator.finished { navigator.end() } else { ending = true }
+                } label: {
+                    Image(systemName: navigator.finished ? "checkmark" : "stop.fill")
+                        .font(.system(size: 17, weight: .semibold)).frame(width: 36, height: 36)
                 }
+                .buttonStyle(.glassProminent).tint(.red).buttonBorderShape(.circle)
+                .accessibilityLabel(navigator.finished ? "完成导航" : "结束导航")
             }
-        }.padding(18).modifier(NavigationGlass(clear: true))
+            .padding(.leading, 18).padding(.trailing, 8).padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .modifier(NavigationGlass(clear: true))
+        }
+    }
+    private func floatingButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 32)
+        }
+        .buttonStyle(.glass).controlSize(.small).buttonBorderShape(.circle)
+        .frame(minWidth: 44, minHeight: 44).accessibilityLabel(title)
+    }
+    private var informationSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(navigator.status).font(.headline)
+                    if navigator.isApproaching {
+                        Text(navigator.approachMessage)
+                        Label("绿色路线前往入口，蓝色为完整环线", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    }
+                    if !navigator.isPreview {
+                        Label("未走路书", systemImage: "line.diagonal").foregroundStyle(.blue)
+                        Label("已走路段", systemImage: "line.diagonal").foregroundStyle(.gray)
+                        Label("本次轨迹", systemImage: "line.diagonal").foregroundStyle(.orange)
+                        Text(navigator.recordingText).foregroundStyle(.secondary)
+                    }
+                    if navigator.onRoute && !navigator.finished && !navigator.readyToStartLoop {
+                        ForEach(Array(navigator.upcoming.dropFirst())) { turn in
+                            Label("\(navigationDistance(max(0, turn.meters-navigator.guidanceProgress))) · \(turn.instruction)", systemImage: turn.symbol)
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            }
+            .navigationTitle("导航说明").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showInformation = false } } }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
 }

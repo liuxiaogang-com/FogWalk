@@ -12,6 +12,30 @@ final class RoadbookTests: XCTestCase {
         return url
     }
     private let gpx = "<gpx><trk><name>我的路线</name><trkseg><trkpt lat='34.7' lon='113.6'/><trkpt lat='34.71' lon='113.6'/><trkpt lat='34.71' lon='113.61'/></trkseg></trk></gpx>"
+    func testCompleteGPXWithExportResidueRecoversAndDeduplicates() throws {
+        let root = try directory(), store = RoadbookStore(directory: root)
+        let id = try store.importData(Data((gpx + "on=\"113.65\">\n<trkpt><time>2").utf8), name: "residue")
+        XCTAssertEqual(store.books[0].points.count, 3)
+        XCTAssertNotNil(store.books[0].importWarning)
+        XCTAssertEqual(try store.importData(Data(gpx.utf8), name: "clean"), id)
+        XCTAssertNotNil(RoadbookStore(directory: root).books[0].importWarning)
+    }
+    func testIncompleteOrConcatenatedGPXIsNotSilentlyRecovered() throws {
+        let store = RoadbookStore(directory: try directory())
+        for text in [String(gpx.dropLast(6)), gpx + gpx,
+                     gpx.replacingOccurrences(of: "</trkseg>", with: "&broken;</trkseg>"),
+                     gpx.replacingOccurrences(of: "gpx", with: "document")] {
+            XCTAssertThrowsError(try store.importData(Data(text.utf8), name: "invalid"))
+        }
+        XCTAssertTrue(store.books.isEmpty)
+    }
+    func testNamespacedGPX11WithTimeAndElevation() throws {
+        let store = RoadbookStore(directory: try directory())
+        let xml = "<g:gpx xmlns:g='http://www.topografix.com/GPX/1/1' version='1.1' creator='IGPSPORT'><g:trk><g:trkseg><g:trkpt lat='34.7' lon='113.6'><g:ele>91</g:ele><g:time>2024-08-31T20:41:37Z</g:time></g:trkpt><g:trkpt lat='34.71' lon='113.6'/></g:trkseg></g:trk></g:gpx>"
+        _ = try store.importData(Data(xml.utf8), name: "GPX 1.1")
+        XCTAssertEqual(store.books.first?.points.count, 2)
+        XCTAssertNil(store.books.first?.importWarning)
+    }
     func testImportRenameDeleteAndReloadKeepSeparateLibrary() throws {
         let root = try directory(), store = RoadbookStore(directory: root)
         let id = try store.importData(Data(gpx.utf8), name: "fallback")

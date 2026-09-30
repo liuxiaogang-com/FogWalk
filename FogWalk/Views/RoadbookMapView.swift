@@ -202,8 +202,10 @@ final class RoadbookInk: UIView {
         ctx.saveGState(); ctx.translateBy(x: s.x, y: s.y)
         ctx.rotate(by: CGFloat((heading-map.camera.heading) * .pi / 180))
         if overview { ctx.scaleBy(x: 0.7, y: 0.7) }
-        UIImage(systemName: "location.north.fill")?.withTintColor(.white, renderingMode: .alwaysOriginal).draw(in: CGRect(x: -22, y: -27, width: 44, height: 52))
-        UIImage(systemName: "location.north.fill")?.withTintColor(.systemBlue, renderingMode: .alwaysOriginal).draw(in: CGRect(x: -17, y: -22, width: 34, height: 42))
+        ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 4, color: UIColor.black.withAlphaComponent(0.18).cgColor)
+        UIImage(systemName: "location.north.fill")?.withTintColor(.white, renderingMode: .alwaysOriginal).draw(in: CGRect(x: -16, y: -19, width: 32, height: 38))
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+        UIImage(systemName: "location.north.fill")?.withTintColor(.systemBlue, renderingMode: .alwaysOriginal).draw(in: CGRect(x: -12, y: -15, width: 24, height: 30))
         ctx.restoreGState()
     }
 }
